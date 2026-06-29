@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m unittest:*)",
+      "Bash(python -c:*)",
+      "Bash(git status)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git show:*)"
+    ],
+    "deny": [
+      "Bash(git push:*)",
+      "Bash(git commit:*)",
+      "Read(./.env)",
+      "Read(./models/**)",
+      "Read(./uploads/**)",
+      "Read(./logs/**)",
+      "Read(./data/in/**)",
+      "Read(./data/out/**)"
+    ]
+  }
+}
