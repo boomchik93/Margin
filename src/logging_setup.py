@@ -1,0 +1,142 @@
+# -*- coding: utf-8 -*-
+"""Настройка логирования: JSON в файл, текст в консоль."""
+
+import contextvars
+import datetime
+import json
+import logging
+import logging.handlers
+import os
+import sys
+import time
+import traceback
+import uuid
+
+# Корень проекта: src/ лежит на уровень ниже.
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# Директория логов. Переопределяется LOG_DIR — в Docker она монтируется
+# наружу, иначе логи умрут вместе с контейнером.
+LOG_DIR = os.environ.get("LOG_DIR") or os.path.join(PROJECT_ROOT, "logs")
+
+# Сырой вывод модели по каждому проходу. Он объёмный (десятки килобайт на
+# зону) и нужен редко, поэтому пишется только по явному включению.
+LOG_RAW = os.environ.get("LOG_RAW_MODEL_OUTPUT", "").strip().lower() in (
+    "1", "true", "yes", "on")
+RAW_DIR = os.path.join(LOG_DIR, "raw")
+
+# Размер файла до ротации и число хранимых копий.
+MAX_BYTES = int(os.environ.get("LOG_MAX_BYTES") or 50 * 1024 * 1024)
+BACKUP_COUNT = int(os.environ.get("LOG_BACKUP_COUNT") or 10)
+
+# файл подробнее консоли: в файл всё для разбора, в консоль — за чем следить
+FILE_LEVEL = (os.environ.get("LOG_LEVEL") or "DEBUG").upper()
+CONSOLE_LEVEL = (os.environ.get("LOG_CONSOLE_LEVEL") or "INFO").upper()
+
+# Ключи LogRecord, которые есть у любой записи. Всё, что сверх этого набора,
+# положено вызывающим через extra= и уходит в JSON как есть.
+_STANDARD = {
+    "name", "msg", "args", "levelname", "levelno", "pathname", "filename",
+    "module", "exc_info", "exc_text", "stack_info", "lineno", "funcName",
+    "created", "msecs", "relativeCreated", "thread", "threadName",
+    "processName", "process", "taskName", "message", "asctime",
+}
+
+# Идентификатор запроса, видимый всем записям в пределах обработки одного
+# HTTP-запроса.
+_request_id = contextvars.ContextVar("request_id", default="")
+
+_configured = False
+
+
+def newRequestId():
+    """Короткий идентификатор запроса, восьми знаков хватает."""
+    return uuid.uuid4().hex[:8]
+
+
+def setRequestId(value):
+    """Привязать идентификатор к текущему контексту."""
+    _request_id.set(value or "")
+    return value
+
+
+def getRequestId():
+    return _request_id.get()
+
+
+class _JsonFormatter(logging.Formatter):
+    """Одна запись — один JSON-объект в строке."""
+
+    def format(self, record):
+        entry = {
+            "ts": datetime.datetime.fromtimestamp(
+                record.created, datetime.timezone.utc
+            ).isoformat(timespec="milliseconds"),
+            "level": record.levelname,
+            "logger": record.name,
+            "event": record.getMessage(),
+        }
+
+        rid = getattr(record, "request_id", "") or getRequestId()
+        if rid:
+            entry["request_id"] = rid
+
+        for key, value in record.__dict__.items():
+            if key in _STANDARD or key == "request_id":
+                continue
+            try:
+                json.dumps(value, ensure_ascii=False)
+                entry[key] = value
+            except (TypeError, ValueError):
+                entry[key] = repr(value)
+
+        if record.exc_info:
+            entry["exception"] = "".join(
+                traceback.format_exception(*record.exc_info)).strip()
+
+        entry.setdefault("source", f"{record.module}:{record.lineno}")
+
+        return json.dumps(entry, ensure_ascii=False, default=str)
+
+
+class _ConsoleFormatter(logging.Formatter):
+    """Человекочитаемая строка для консоли и errors.log."""
+
+    def __init__(self):
+        super().__init__(
+            fmt="%(asctime)s %(levelname)-7s %(name)-14s %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S")
+
+    def format(self, record):
+        base = super().format(record)
+
+        rid = getattr(record, "request_id", "") or getRequestId()
+        if rid:
+            base = base.replace(record.getMessage(),
+                                f"[{rid}] {record.getMessage()}", 1)
+
+        extras = []
+        for key, value in record.__dict__.items():
+            if key in _STANDARD or key == "request_id":
+                continue
+            text = str(value)
+            # Длинные значения (сырой ответ модели, список кандидатов) в
+            # консоли обрезаем: целиком они есть в app.log.
+            if len(text) > 200:
+                text = text[:200] + "…"
+            extras.append(f"{key}={text}")
+        if extras:
+            base = f"{base}  {' '.join(extras)}"
+
+        if record.exc_info:
+            base = f"{base}\n{''.join(traceback.format_exception(*record.exc_info)).rstrip()}"
+        return base
+
+
+class _RequestIdFilter(logging.Filter):
+    """Проставляет request_id записям, сделанным без явного extra."""
+
+    def filter(self, record):
+        if not getattr(record, "request_id", ""):
+            record.request_id = getRequestId()
+        return True
