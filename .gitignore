@@ -1,0 +1,53 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Модели: большие файлы, скачиваются отдельно
+models/*
+!models/.gitkeep
+*.gguf
+
+# llama.cpp (собирается в Docker или отдельно)
+llama.cpp/
+
+# Загрузки и журналы: в них лежит содержимое распознанных документов
+uploads/*
+!uploads/.gitkeep
+logs/*
+!logs/.gitkeep
+*.log
+
+# Локальные настройки окружения
+.env
+
+# История распознаваний (SQLite): своя на каждой установке
+data/*.db
+data/*.db-wal
+data/*.db-shm
+
+# Папочная обвязка: входные файлы, результаты и архив
+data/in/*
+!data/in/.gitkeep
+!data/in/archive/
+data/in/archive/*
+!data/in/archive/.gitkeep
+data/out/*
+!data/out/.gitkeep
+
+# Свои словари держите вне репозитория, если в них есть закрытые данные.
+# Пример cities.json версионируется.
+
+# ОС и редакторы
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*~
