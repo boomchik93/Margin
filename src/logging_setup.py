@@ -163,3 +163,75 @@ class _SafeLogger(logging.Logger):
 # Класс логгера ставится до создания логгеров модулями: logging.getLogger()
 # кэширует объекты, и смена класса задним числом на уже созданные не влияет.
 logging.setLoggerClass(_SafeLogger)
+
+
+def setup(force=False):
+    """Настроить логирование процесса. Повторные вызовы игнорируются."""
+    global _configured
+    if _configured and not force:
+        return logging.getLogger("ocr")
+
+    try:
+        os.makedirs(LOG_DIR, exist_ok=True)
+        if LOG_RAW:
+            os.makedirs(RAW_DIR, exist_ok=True)
+        writable = os.access(LOG_DIR, os.W_OK)
+    except OSError:
+        writable = False
+
+    root = logging.getLogger()
+    root.setLevel(logging.DEBUG)
+    for handler in list(root.handlers):
+        root.removeHandler(handler)
+
+    id_filter = _RequestIdFilter()
+
+    console = logging.StreamHandler(sys.stdout)
+    console.setLevel(getattr(logging, CONSOLE_LEVEL, logging.INFO))
+    console.setFormatter(_ConsoleFormatter())
+    console.addFilter(id_filter)
+    root.addHandler(console)
+
+    if writable:
+        app_file = logging.handlers.RotatingFileHandler(
+            os.path.join(LOG_DIR, "app.log"),
+            maxBytes=MAX_BYTES, backupCount=BACKUP_COUNT, encoding="utf-8")
+        app_file.setLevel(getattr(logging, FILE_LEVEL, logging.DEBUG))
+        app_file.setFormatter(_JsonFormatter())
+        app_file.addFilter(id_filter)
+        root.addHandler(app_file)
+
+        err_file = logging.handlers.RotatingFileHandler(
+            os.path.join(LOG_DIR, "errors.log"),
+            maxBytes=MAX_BYTES, backupCount=BACKUP_COUNT, encoding="utf-8")
+        err_file.setLevel(logging.WARNING)
+        err_file.setFormatter(_ConsoleFormatter())
+        err_file.addFilter(id_filter)
+        root.addHandler(err_file)
+    else:
+        # только консоль: штатно при неверных правах на том, но молчать нельзя
+        logging.getLogger("ocr").warning(
+            "директория логов недоступна для записи, файловые логи отключены",
+            extra={"log_dir": LOG_DIR})
+
+    # Flask/werkzeug пишет свой access-лог; он дублирует наш и в JSON не нужен.
+    logging.getLogger("werkzeug").setLevel(logging.WARNING)
+
+    _configured = True
+
+    log = logging.getLogger("ocr")
+    log.info("логирование настроено", extra={
+        "log_dir": LOG_DIR,
+        "file_level": FILE_LEVEL,
+        "console_level": CONSOLE_LEVEL,
+        "raw_model_output": LOG_RAW,
+        "rotation_mb": round(MAX_BYTES / 1024 / 1024, 1),
+        "backups": BACKUP_COUNT,
+        "files_enabled": writable,
+    })
+    return log
+
+
+def getLogger(name):
+    """Логгер модуля, все имена в пространстве `ocr.*`."""
+    return logging.getLogger(name if name.startswith("ocr") else f"ocr.{name}")
