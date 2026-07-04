@@ -140,3 +140,26 @@ class _RequestIdFilter(logging.Filter):
         if not getattr(record, "request_id", ""):
             record.request_id = getRequestId()
         return True
+
+
+class _SafeLogger(logging.Logger):
+    """Логгер, у которого extra не может уронить запись."""
+
+    def makeRecord(self, name, level, fn, lno, msg, args, exc_info,
+                   func=None, extra=None, sinfo=None):
+        if extra:
+            safe = {}
+            for key, value in extra.items():
+                # request_id обрабатывается отдельно фильтром и разрешён.
+                if key in _STANDARD and key != "request_id":
+                    safe[key + "_"] = value
+                else:
+                    safe[key] = value
+            extra = safe
+        return super().makeRecord(name, level, fn, lno, msg, args, exc_info,
+                                  func, extra, sinfo)
+
+
+# Класс логгера ставится до создания логгеров модулями: logging.getLogger()
+# кэширует объекты, и смена класса задним числом на уже созданные не влияет.
+logging.setLoggerClass(_SafeLogger)
