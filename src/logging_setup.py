@@ -235,3 +235,57 @@ def setup(force=False):
 def getLogger(name):
     """Логгер модуля, все имена в пространстве `ocr.*`."""
     return logging.getLogger(name if name.startswith("ocr") else f"ocr.{name}")
+
+
+# --- аудит распознаваний ---------------------------------------------------
+# отдельный файл: у аудита свой срок хранения. Формат JSON Lines
+
+_audit_logger = None
+
+
+def _auditLogger():
+    global _audit_logger
+    if _audit_logger is not None:
+        return _audit_logger
+
+    logger = logging.getLogger("ocr.audit")
+    logger.setLevel(logging.INFO)
+    # Аудит не должен попадать в app.log: он большой и повторяет то, что там
+    # уже разложено по событиям.
+    logger.propagate = False
+
+    try:
+        os.makedirs(LOG_DIR, exist_ok=True)
+        handler = logging.handlers.RotatingFileHandler(
+            os.path.join(LOG_DIR, "audit.jsonl"),
+            maxBytes=MAX_BYTES,
+            # Аудит хранится дольше отладки: по нему разбирают спорные случаи
+            # спустя месяцы.
+            backupCount=int(os.environ.get("AUDIT_BACKUP_COUNT") or 50),
+            encoding="utf-8")
+        handler.setFormatter(logging.Formatter("%(message)s"))
+        logger.addHandler(handler)
+    except OSError as e:
+        logging.getLogger("ocr").warning(
+            "аудит-лог недоступен", extra={"error": str(e)})
+        logger.addHandler(logging.NullHandler())
+
+    _audit_logger = logger
+    return logger
+
+
+def audit(record):
+    """Записать в аудит одну распознанную страницу."""
+    payload = dict(record or {})
+    payload.setdefault("ts", datetime.datetime.now(
+        datetime.timezone.utc).isoformat(timespec="milliseconds"))
+    payload.setdefault("request_id", getRequestId())
+    try:
+        line = json.dumps(payload, ensure_ascii=False, default=str)
+    except (TypeError, ValueError) as e:
+        line = json.dumps({
+            "ts": payload["ts"],
+            "request_id": payload.get("request_id", ""),
+            "audit_error": f"запись не сериализуется: {e}",
+        }, ensure_ascii=False)
+    _auditLogger().info(line)
