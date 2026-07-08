@@ -289,3 +289,19 @@ def audit(record):
             "audit_error": f"запись не сериализуется: {e}",
         }, ensure_ascii=False)
     _auditLogger().info(line)
+
+
+def saveRawOutput(tag, text):
+    """Сохранить сырой вывод модели, если включён LOG_RAW_MODEL_OUTPUT."""
+    if not LOG_RAW or not text:
+        return ""
+    rid = getRequestId() or "norequest"
+    name = f"{rid}_{tag}_{int(time.time() * 1000)}.txt"
+    path = os.path.join(RAW_DIR, name)
+    try:
+        os.makedirs(RAW_DIR, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        return path
+    except OSError:
+        return ""
