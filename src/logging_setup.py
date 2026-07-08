@@ -305,3 +305,39 @@ def saveRawOutput(tag, text):
         return path
     except OSError:
         return ""
+
+
+class stage:
+    """Замер стадии пайплайна: время и исход."""
+
+    def __init__(self, logger, name, **fields):
+        self.logger = logger
+        self.name = name
+        self.fields = dict(fields)
+        self.started = 0.0
+
+    def add(self, **fields):
+        """Дописать поля, известные только по завершении стадии."""
+        self.fields.update(fields)
+        return self
+
+    def __enter__(self):
+        self.started = time.time()
+        self.logger.debug(f"стадия начата: {self.name}",
+                          extra={"stage": self.name, **self.fields})
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        elapsed = round(time.time() - self.started, 3)
+        if exc_type is not None:
+            self.logger.error(
+                f"стадия провалена: {self.name}",
+                extra={"stage": self.name, "seconds": elapsed,
+                       "error": str(exc), "error_type": exc_type.__name__,
+                       **self.fields},
+                exc_info=(exc_type, exc, tb))
+            return False
+        self.logger.info(f"стадия завершена: {self.name}",
+                         extra={"stage": self.name, "seconds": elapsed,
+                                **self.fields})
+        return False
