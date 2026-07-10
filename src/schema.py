@@ -346,3 +346,52 @@ def loadErrors():
 def reload():
     _refresh(force=True)
     return listSchemas()
+
+
+# === РЕЗУЛЬТАТ ===
+
+def emptyResult(sch):
+    """Пустой результат с полной структурой: все ключи схемы на месте."""
+    return {f["key"]: (UNCLEAR if f["type"] == "checkbox" else "")
+            for f in sch["fields"]}
+
+
+def toCheckbox(val):
+    """Любой ответ модели -> checked/unchecked/unclear."""
+    if val is None:
+        return UNCLEAR
+    if isinstance(val, bool):
+        return CHECKED if val else UNCHECKED
+    s = str(val).strip().lower()
+    if s in CHECKBOX_VALUES:
+        return s
+    if s in ("true", "1", "yes", "да", "есть", "+", "v", "✓", "x", "х"):
+        return CHECKED
+    if s in ("false", "0", "no", "нет", "-", ""):
+        return UNCHECKED
+    return UNCLEAR
+
+
+def enforce(sch, data):
+    """Приводит ответ модели к схеме: все ключи на месте, лишних нет.
+
+    Это и есть гарантия структуры: что бы ни вернула модель, клиент получает
+    один и тот же набор ключей.
+    """
+    result = emptyResult(sch)
+    if not isinstance(data, dict):
+        return result
+    for field in sch["fields"]:
+        key = field["key"]
+        if key not in data:
+            continue
+        val = data[key]
+        if field["type"] == "checkbox":
+            result[key] = toCheckbox(val)
+        elif isinstance(val, (dict, list)):
+            # Вложенная структура вместо значения — модель ответила не по
+            # схеме. Пустая строка честнее, чем repr словаря в поле.
+            result[key] = ""
+        else:
+            result[key] = "" if val is None else str(val).strip()
+    return result
