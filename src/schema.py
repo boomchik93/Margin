@@ -257,3 +257,92 @@ def validate(raw, name="inline"):
         "fields": fields,
         "zones": zones,
     }, []
+
+
+# === ЗАГРУЗКА ===
+
+_lock = threading.Lock()
+_cache = {}
+_errors = {}
+_fingerprint = None
+
+
+def _scan():
+    """Отпечаток директории: имена, размеры и время правки файлов."""
+    try:
+        names = sorted(n for n in os.listdir(SCHEMA_DIR)
+                       if n.lower().endswith(".json") and not n.startswith("."))
+    except OSError:
+        return ()
+    out = []
+    for n in names:
+        try:
+            st = os.stat(os.path.join(SCHEMA_DIR, n))
+            out.append((n, st.st_size, int(st.st_mtime * 1000)))
+        except OSError:
+            continue
+    return tuple(out)
+
+
+def _refresh(force=False):
+    """Перечитывает схемы, если директория изменилась."""
+    global _fingerprint
+    current = _scan()
+    with _lock:
+        if not force and current == _fingerprint:
+            return
+        loaded, errors = {}, {}
+        for filename, _, _ in current:
+            name = os.path.splitext(filename)[0]
+            if not NAME_RE.match(name):
+                errors[filename] = ["имя файла: латиница, цифры, дефис и "
+                                    "подчёркивание"]
+                continue
+            try:
+                with open(os.path.join(SCHEMA_DIR, filename),
+                          encoding="utf-8") as f:
+                    raw = json.load(f)
+            except (OSError, ValueError) as e:
+                errors[filename] = ["файл не разобран как JSON: %s" % e]
+                continue
+            sch, errs = validate(raw, name=name)
+            if errs:
+                errors[filename] = errs
+            else:
+                loaded[name] = sch
+        _cache.clear()
+        _cache.update(loaded)
+        _errors.clear()
+        _errors.update(errors)
+        _fingerprint = current
+
+    # Битая схема не должна выглядеть как «схемы нет»: причина в журнале и в
+    # GET /api/schemas.
+    for filename, errs in errors.items():
+        log.warning("схема не загружена",
+                    extra={"schema_file": filename, "errors": errs})
+    log.info("схемы загружены", extra={"dir": SCHEMA_DIR,
+                                       "schemas": sorted(loaded)})
+
+
+def get(name):
+    """Схема по имени или None."""
+    _refresh()
+    return _cache.get(name)
+
+
+def listSchemas():
+    """Все загруженные схемы: имя -> схема."""
+    _refresh()
+    return dict(_cache)
+
+
+def loadErrors():
+    """Файлы, которые не удалось загрузить: имя файла -> список причин."""
+    _refresh()
+    return dict(_errors)
+
+
+def reload():
+    _refresh(force=True)
+    return listSchemas()
