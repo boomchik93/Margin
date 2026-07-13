@@ -395,3 +395,106 @@ def enforce(sch, data):
         else:
             result[key] = "" if val is None else str(val).strip()
     return result
+
+
+# === ПРОМПТЫ ===
+
+def languageRule(language):
+    """Правило про язык рукописи."""
+    lang = (language or "").strip().lower()
+    if lang in ("ru", "rus", "russian", "русский"):
+        return ("ЯЗЫК: текст написан по-русски, кириллицей. Не подменяй "
+                "русские буквы похожими латинскими (P, C, O, A, B, E, H, K, "
+                "M, T, X) — пиши русские (Р, С, О, А, В, Е, Н, К, М, Т, Х). "
+                "Цифра 0 и буква О различаются.")
+    if lang in ("en", "eng", "english"):
+        return "ЯЗЫК: текст написан по-английски, латиницей."
+    if lang in ("", "auto"):
+        return ("ЯЗЫК: пиши в том алфавите, в котором написано, без "
+                "перевода и транслитерации.")
+    return ("ЯЗЫК: текст написан на языке «%s». Пиши в исходном алфавите, "
+            "без перевода и транслитерации." % lang)
+
+
+# Пояснение формата идёт маской, а не примером значения: с образцом вида
+# "например 01.02.2003" модель вписывает образец в пустое поле.
+_TYPE_NOTES = {
+    "number": "число; перенеси цифры и знаки ровно как написано",
+    "date": "дата в виде ДД.ММ.ГГГГ; год пиши так, как он написан от руки",
+    "phone": "номер телефона; только цифры, все до одной",
+    "checkbox": 'отметка: "checked", "unchecked" или "unclear"',
+}
+
+
+def _fieldLine(field):
+    parts = ['- "%s" — %s' % (field["key"], field["label"])]
+    note = _TYPE_NOTES.get(field["type"])
+    if note:
+        parts.append("(%s)" % note)
+    line = " ".join(parts) + "."
+    if field["hint"]:
+        line += " " + field["hint"].rstrip(".") + "."
+    return line
+
+
+def _structure(fields):
+    """Образец ответа: все ключи с пустыми значениями."""
+    blank = {f["key"]: ("unchecked" if f["type"] == "checkbox" else "")
+             for f in fields}
+    return json.dumps(blank, ensure_ascii=False)
+
+
+def _checkboxRule(fields):
+    if not any(f["type"] == "checkbox" for f in fields):
+        return None
+    return ('ОТМЕТКИ: каждую оценивай отдельно и независимо от остальных. '
+            '"checked" — есть рукописная отметка (галочка, крестик, '
+            'закрашенный квадрат, подпись), "unchecked" — место отметки '
+            'пусто, "unclear" — разглядеть не удалось. Не ставь "unchecked", '
+            'когда просто не уверен: для этого есть "unclear".')
+
+
+def _numbered(rules):
+    return "\n".join("%d. %s" % (i, r) for i, r in enumerate(rules, 1))
+
+
+def fullPrompt(sch):
+    """Промпт полностраничного прохода: все поля схемы."""
+    fields = sch["fields"]
+    rules = [
+        "Извлекай ТОЛЬКО рукописные данные. Печатные подписи полей в "
+        "значения НЕ включай.",
+        "ТОЧНОСТЬ: переноси буквы, цифры и знаки ровно как написано "
+        "(минусы, плюсы, запятые, дефисы, дроби). Ничего не исправляй и не "
+        "додумывай.",
+        'ПУСТЫЕ ПОЛЯ: если поле не заполнено от руки — верни пустую '
+        'строку "". Не придумывай значение.',
+        languageRule(sch["language"]),
+    ]
+    rule = _checkboxRule(fields)
+    if rule:
+        rules.append(rule)
+    rules.append("ФОРМАТ: верни ТОЛЬКО валидный JSON. Без markdown, без "
+                 "```, без пояснений.")
+
+    head = "Внимательно изучи изображение документа"
+    if sch.get("title") and sch["title"] != sch["name"]:
+        head += " «%s»" % sch["title"]
+    head += "."
+    if sch.get("description"):
+        head += " " + sch["description"].rstrip(".") + "."
+
+    return "\n".join([
+        head,
+        "Задача: извлечь ТОЛЬКО рукописный текст (вписанный от руки) и "
+        "проигнорировать весь напечатанный типографский текст.",
+        "",
+        "ПРАВИЛА:",
+        _numbered(rules),
+        "",
+        "ПОЛЯ:",
+        "\n".join(_fieldLine(f) for f in fields),
+        "",
+        "Структура ответа (заполни ВСЕ ключи, отсутствующие данные = \"\"):",
+        _structure(fields),
+    ])
