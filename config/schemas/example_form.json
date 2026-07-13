@@ -1,0 +1,61 @@
+{
+  "title": "Анкета участника",
+  "description": "Пример схемы: анкета с печатными подписями полей и рукописными ответами",
+  "language": "ru",
+  "fields": [
+    {
+      "key": "full_name",
+      "label": "Фамилия, имя, отчество",
+      "type": "text",
+      "case": "upper",
+      "required": true,
+      "hint": "Читай целиком, с первой буквы"
+    },
+    {
+      "key": "birth_date",
+      "label": "Дата рождения",
+      "type": "date",
+      "min_year": 1900
+    },
+    {
+      "key": "phone",
+      "label": "Контактный телефон",
+      "type": "phone"
+    },
+    {
+      "key": "city",
+      "label": "Город",
+      "type": "text",
+      "dictionary": "cities",
+      "max_dist": 1.0
+    },
+    {
+      "key": "participants",
+      "label": "Число участников",
+      "type": "number",
+      "min": 1,
+      "max": 100
+    },
+    {
+      "key": "comment",
+      "label": "Комментарий",
+      "type": "text"
+    },
+    {
+      "key": "consent",
+      "label": "Согласие на обработку данных",
+      "type": "checkbox"
+    },
+    {
+      "key": "signed",
+      "label": "Подпись",
+      "type": "checkbox",
+      "hint": "checked, если в месте подписи есть рукописный росчерк"
+    },
+    {
+      "key": "date",
+      "label": "Дата заполнения",
+      "type": "date"
+    }
+  ]
+}
