@@ -552,3 +552,19 @@ def zonePrompts(sch, zone):
             "включай. Переноси символы ровно как написано.\n"
             "ПОЛЯ:\n" + "\n".join(_fieldLine(f) for f in fields))
     return ["\n".join([head] + tail)]
+
+
+def describe(sch):
+    """Краткое описание схемы для GET /api/schemas."""
+    return {
+        "name": sch["name"],
+        "title": sch["title"],
+        "description": sch["description"],
+        "language": sch["language"],
+        "fields": [{"key": f["key"], "label": f["label"], "type": f["type"],
+                    "required": f["required"],
+                    **({"dictionary": f["dictionary"]}
+                       if f.get("dictionary") else {})}
+                   for f in sch["fields"]],
+        "zones": [z["name"] for z in sch["zones"]],
+    }
