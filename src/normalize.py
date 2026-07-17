@@ -82,3 +82,24 @@ def normalizeDate(value, today=None):
             full -= 100
         y = str(full)
     return "%s.%s.%s" % (d.zfill(2), mo.zfill(2), y)
+
+
+def normalizeField(field, value, language="ru"):
+    """Значение поля в нормализованном виде."""
+    ftype = field["type"]
+    if ftype == "checkbox":
+        return toCheckbox(value)
+    if ftype == "number":
+        return _number(value)
+    if ftype == "phone":
+        return _phone(value)
+    if ftype == "date":
+        return normalizeDate(value)
+    return _text(field, value, language)
+
+
+def normalizeResult(sch, data):
+    """Нормализует все поля результата по схеме."""
+    language = sch.get("language", "ru")
+    return {f["key"]: normalizeField(f, data.get(f["key"]), language)
+            for f in sch["fields"]}
