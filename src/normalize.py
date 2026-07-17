@@ -57,3 +57,28 @@ def _phone(value):
     if not digits:
         return ""
     return ("+" if s.startswith("+") else "") + digits
+
+
+_DATE_RE = re.compile(r"^(\d{1,2})[.\s/\-](\d{1,2})[.\s/\-](\d{2,4})$")
+
+
+def normalizeDate(value, today=None):
+    """ДД.ММ.ГГГГ из разных разделителей; неполную дату оставляем как есть."""
+    s = str(value or "").strip()
+    if not s:
+        return ""
+    m = _DATE_RE.match(s)
+    if not m:
+        return s
+    d, mo, y = m.groups()
+    if len(y) == 3:
+        return s
+    if len(y) == 2:
+        # Двузначный год: век выбираем так, чтобы дата не ушла в будущее
+        # дальше десяти лет. "85" -> 1985, "24" -> 2024.
+        now = (today or datetime.date.today()).year
+        full = 2000 + int(y)
+        if full > now + 10:
+            full -= 100
+        y = str(full)
+    return "%s.%s.%s" % (d.zfill(2), mo.zfill(2), y)
