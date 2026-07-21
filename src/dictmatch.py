@@ -337,3 +337,48 @@ def nearestCandidates(name, value, limit=2):
         scored.append((confusableDist(key, nk), c))
     scored.sort(key=lambda item: (item[0], item[1]))
     return [{"value": c, "distance": round(d, 2)} for d, c in scored[:limit]]
+
+
+def applyDictionaries(sch, data):
+    """Сверяет поля схемы со словарями.
+
+    Возвращает (данные, статусы, кандидаты). Статус есть только у полей, для
+    которых в схеме указан словарь; кандидаты — только у ушедших на проверку.
+    """
+    out = dict(data)
+    statuses, candidates = {}, {}
+    for field in sch["fields"]:
+        name = field.get("dictionary")
+        if not name:
+            continue
+        key = field["key"]
+        if name not in DB:
+            # Словарь указан в схеме, но файла нет. Это не «значение не
+            # найдено», а сбой настройки, и выглядеть он должен иначе.
+            statuses[key] = "no_dictionary"
+            continue
+
+        before = out.get(key, "")
+        max_dist = field.get("max_dist", THRESHOLDS.get(name))
+        after, status = matchValue(before, DB[name], max_dist=max_dist)
+        statuses[key] = status
+        out[key] = after
+
+        if status == "review":
+            candidates[key] = nearestCandidates(name, before)
+        if status in ("fixed", "review"):
+            # Каждое решение словаря идёт в журнал: итог не совпадает с тем,
+            # что прочитала модель, и без записи выглядит взявшимся ниоткуда.
+            log.info("решение словаря", extra={
+                "field": key, "dictionary": name, "recognized": before,
+                "result": after, "status": status, "max_dist": max_dist,
+                "dictionary_size": len(DB[name]),
+                "candidates": candidates.get(key)})
+    return out, statuses, candidates
+
+
+# Инициализация в конце модуля: загрузка пользуется norm(), определённым выше.
+try:
+    reload()
+except Exception as e:  # словари не обязаны существовать
+    log.warning("словари не загружены при старте", extra={"error": str(e)})
