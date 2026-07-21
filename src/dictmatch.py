@@ -266,3 +266,52 @@ def confusableDist(a, b):
             cur[j] = min(prev[j] + 1.0, cur[j - 1] + 1.0, prev[j - 1] + cost)
         prev = cur
     return prev[lb]
+
+
+# === ПОДБОР ===
+
+def matchValue(value, candidates, max_dist=None):
+    """Подобрать значение из словаря. Возвращает (значение, статус).
+
+    Статусы:
+      exact  — найдено точно, значение приведено к написанию из словаря;
+      fixed  — исправлено на единственного ближайшего кандидата;
+      review — в словаре нет, значение оставлено как прочитано;
+      skip   — сверять нечего: значение пустое или словарь пуст.
+
+    `max_dist` — наибольшее расстояние, на котором расхождение ещё считается
+    ошибкой чтения. None означает «не подставлять»: порог для каждого словаря
+    набирается замером, и подстановка «на глаз» чинила бы вслепую.
+    """
+    raw = str(value or "").strip()
+    if not raw or not candidates:
+        return raw, "skip"
+
+    key = norm(raw)
+    index = {}
+    for c in candidates:
+        index.setdefault(norm(c), c)
+    if key in index:
+        return index[key], "exact"
+
+    if max_dist is None or len(key) < EXACT_ONLY_LEN:
+        return raw, "review"
+
+    limit = min(1.0, max_dist) if len(key) <= SHORT_LEN else max_dist
+    best, best_d, ties = None, None, 0
+    for nk, orig in index.items():
+        # длина отличается больше порога — считать расстояние незачем
+        if abs(len(nk) - len(key)) > limit:
+            continue
+        d = confusableDist(key, nk)
+        if d > limit:
+            continue
+        if best_d is None or d < best_d - 1e-9:
+            best, best_d, ties = orig, d, 1
+        elif abs(d - best_d) < 1e-9 and orig != best:
+            ties += 1
+    # Два кандидата на равном расстоянии — выбор между ними случаен, и
+    # подставлять любой из них нельзя.
+    if best is not None and ties == 1:
+        return best, "fixed"
+    return raw, "review"
