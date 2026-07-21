@@ -315,3 +315,25 @@ def matchValue(value, candidates, max_dist=None):
     if best is not None and ties == 1:
         return best, "fixed"
     return raw, "review"
+
+
+def nearestCandidates(name, value, limit=2):
+    """Ближайшие значения словаря: [{"value": ..., "distance": ...}].
+
+    Два кандидата, а не один: равное расстояние у обоих значит, что выбор
+    между ними случаен, и по паре это видно.
+    """
+    raw = str(value or "").strip()
+    candidates = DB.get(name) or []
+    if not raw or not candidates:
+        return []
+    key = norm(raw)
+    scored = []
+    for c in candidates:
+        nk = norm(c)
+        # грубая отсечка по длине, чтобы не считать расстояние до всего словаря
+        if abs(len(nk) - len(key)) > max(3, len(key) // 2):
+            continue
+        scored.append((confusableDist(key, nk), c))
+    scored.sort(key=lambda item: (item[0], item[1]))
+    return [{"value": c, "distance": round(d, 2)} for d, c in scored[:limit]]
