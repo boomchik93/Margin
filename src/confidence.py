@@ -85,3 +85,64 @@ def _checkText(field, v, language):
             if _RE_LATIN.search(word) and _RE_CYRILLIC.search(word):
                 return False
     return None
+
+
+def fieldConfidence(field, value, language="ru"):
+    """Уверенность по одному полю, 0..100, и причина оценки."""
+    if field["type"] == "checkbox":
+        if value in (CHECKED, UNCHECKED):
+            return FORMAT_OK, "mark"
+        return FORMAT_BAD, "unclear"
+
+    text = str(value or "").strip()
+    if not text:
+        return EMPTY, "empty"
+
+    ftype = field["type"]
+    if ftype == "date":
+        ok = _checkDate(field, text)
+    elif ftype == "phone":
+        ok = _checkPhone(field, text)
+    elif ftype == "number":
+        ok = _checkNumber(field, text)
+    else:
+        ok = _checkText(field, text, language)
+
+    if ok is None:
+        return FORMAT_NONE, "unverified"
+    return (FORMAT_OK, "format_ok") if ok else (FORMAT_BAD, "format_bad")
+
+
+def scoreResult(sch, data):
+    """Уверенность по всем полям: (оценки, причины).
+
+    `data` — значения после нормализации, но ДО сверки со словарём:
+    оценивается то, что прочитала модель, а не подстановка.
+    """
+    language = sch.get("language", "ru")
+    scores, reasons = {}, {}
+    for field in sch["fields"]:
+        key = field["key"]
+        scores[key], reasons[key] = fieldConfidence(
+            field, data.get(key), language)
+    return scores, reasons
+
+
+def reviewQueue(sch, data, scores, dict_status=None):
+    """Поля, которые стоит проверить руками, худшие первыми.
+
+    В очередь попадает: нарушенный формат, значение, которого нет в словаре,
+    неразличимая отметка и пустое обязательное поле.
+    """
+    dict_status = dict_status or {}
+    queue = []
+    for field in sch["fields"]:
+        key = field["key"]
+        score = scores.get(key, 0)
+        if 0 < score < REVIEW_THRESHOLD:
+            queue.append((score, key))
+        elif dict_status.get(key) == "review":
+            queue.append((REVIEW_THRESHOLD, key))
+        elif field.get("required") and not str(data.get(key) or "").strip():
+            queue.append((0, key))
+    return [key for _, key in sorted(queue, key=lambda item: item[0])]
