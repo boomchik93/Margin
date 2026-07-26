@@ -124,3 +124,63 @@ def init():
 
 def ready():
     return _ready
+
+
+def _minConfidence(scores):
+    """Минимальная уверенность по странице, пустые поля не считаем."""
+    values = [int(v) for v in (scores or {}).values()
+              if isinstance(v, (int, float)) and v > 0]
+    return min(values) if values else None
+
+
+def save(record):
+    """Сохранить результат одной страницы. Возвращает id строки или None."""
+    if not ENABLED or not _ready:
+        return None
+
+    fields = record.get("fields") or {}
+    confidence = record.get("confidence") or {}
+    needs_review = record.get("needs_review") or []
+
+    row = (
+        record.get("request_id") or "",
+        record.get("created_at") or time.strftime("%Y-%m-%dT%H:%M:%S"),
+        record.get("source_name") or "",
+        record.get("source_type") or "",
+        record.get("page"),
+        record.get("pages_total"),
+        record.get("status") or "ok",
+        record.get("error") or "",
+        record.get("duration_seconds"),
+        record.get("mode") or "",
+        record.get("schema_name") or "",
+        record.get("text") or "",
+        json.dumps(fields, ensure_ascii=False),
+        json.dumps(confidence, ensure_ascii=False),
+        json.dumps(record.get("dict_status") or {}, ensure_ascii=False),
+        json.dumps(record.get("trace") or {}, ensure_ascii=False),
+        json.dumps(needs_review, ensure_ascii=False),
+        len(needs_review),
+        _minConfidence(confidence),
+        record.get("dict_version") or "",
+        record.get("model_name") or "",
+    )
+
+    sql = """INSERT INTO recognitions (
+        request_id, created_at, source_name, source_type, page, pages_total,
+        status, error, duration_seconds, mode, schema_name, text, fields_json,
+        confidence_json, dict_status_json, trace_json, needs_review_json,
+        review_count, min_confidence, dict_version, model_name
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"""
+
+    try:
+        with _lock, _connect() as conn:
+            cur = conn.execute(sql, row)
+            row_id = cur.lastrowid
+        log.debug("результат сохранён", extra={"row_id": row_id,
+                                               "page": record.get("page")})
+        return row_id
+    except sqlite3.Error as e:
+        log.warning("не удалось сохранить результат",
+                    extra={"error": str(e), "page": record.get("page")})
+        return None
