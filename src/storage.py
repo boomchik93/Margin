@@ -1,0 +1,302 @@
+# -*- coding: utf-8 -*-
+"""История распознаваний в SQLite.
+
+Ответ сервиса живёт только в HTTP-соединении. Без хранилища результат
+теряется при обрыве связи, а на вопрос «что сервис вернул по этому файлу
+месяц назад» ответить можно только пересчётом.
+
+SQLite, а не отдельная СУБД: хранилище должно подниматься само, без
+администратора. Объёмы маленькие, запись однопоточная, чтения редкие. При
+переезде на сетевую БД меняется только этот модуль.
+"""
+
+import contextlib
+import json
+import os
+import sqlite3
+import threading
+import time
+
+from logging_setup import getLogger
+
+log = getLogger("storage")
+
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# Путь к файлу БД. Переопределяется RESULTS_DB — в Docker он лежит на
+# смонтированном томе, иначе история пропадёт с контейнером.
+DB_PATH = os.environ.get("RESULTS_DB") or os.path.join(
+    PROJECT_ROOT, "data", "results.db")
+
+# Хранение можно выключить целиком: на замере точности история только мешает,
+# а там, где распознанный текст хранить нельзя, её и не должно быть.
+ENABLED = (os.environ.get("RESULTS_DB_ENABLED") or "1").strip().lower() not in (
+    "0", "false", "no", "off")
+
+# Схема узкая: одна строка на страницу. Поля документа лежат JSON-ом, в
+# колонки вынесено только то, по чему ищут. Разносить поля по колонкам
+# нельзя: их состав задаётся схемой документа и у каждой схемы свой.
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS recognitions (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    request_id        TEXT    NOT NULL,
+    created_at        TEXT    NOT NULL,
+    source_name       TEXT,
+    source_type       TEXT,
+    page              INTEGER,
+    pages_total       INTEGER,
+    status            TEXT    NOT NULL,
+    error             TEXT,
+    duration_seconds  REAL,
+    mode              TEXT,
+    schema_name       TEXT,
+    text              TEXT,
+    fields_json       TEXT,
+    confidence_json   TEXT,
+    dict_status_json  TEXT,
+    trace_json        TEXT,
+    needs_review_json TEXT,
+    review_count      INTEGER DEFAULT 0,
+    min_confidence    INTEGER,
+    dict_version      TEXT,
+    model_name        TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_recognitions_request ON recognitions(request_id);
+CREATE INDEX IF NOT EXISTS idx_recognitions_created ON recognitions(created_at);
+CREATE INDEX IF NOT EXISTS idx_recognitions_schema  ON recognitions(schema_name);
+CREATE INDEX IF NOT EXISTS idx_recognitions_review  ON recognitions(review_count);
+"""
+
+# Одна запись за раз. Flask обслуживает запросы в потоках, а SQLite-соединение
+# не переносится между ними; блокировка проще пула на таких объёмах.
+_lock = threading.Lock()
+_init_error = ""
+_ready = False
+
+
+@contextlib.contextmanager
+def _connect():
+    """Соединение с БД на время одной операции.
+
+    Закрывается явно: `with sqlite3.connect(...)` управляет транзакцией, но
+    не закрывает соединение, и на сервисе, где оно открывается на каждую
+    страницу, это утечка дескрипторов.
+    """
+    conn = sqlite3.connect(DB_PATH, timeout=10)
+    try:
+        conn.row_factory = sqlite3.Row
+        # WAL: чтение истории не блокирует запись очередной страницы.
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def init():
+    """Создать файл и схему. Идемпотентна, вызывается при старте."""
+    global _ready, _init_error
+    if not ENABLED:
+        log.info("хранение результатов отключено",
+                 extra={"reason": "RESULTS_DB_ENABLED=0"})
+        return False
+    try:
+        os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
+        with _lock, _connect() as conn:
+            conn.executescript(SCHEMA)
+        _ready = True
+        _init_error = ""
+        log.info("хранилище результатов готово", extra={"db_path": DB_PATH})
+        return True
+    except (sqlite3.Error, OSError) as e:
+        _ready = False
+        _init_error = str(e)
+        # Не поднимаем исключение: сервис обязан работать и без истории.
+        log.warning("хранилище результатов недоступно, история не пишется",
+                    extra={"db_path": DB_PATH, "error": str(e)})
+        return False
+
+
+def ready():
+    return _ready
+
+
+def _minConfidence(scores):
+    """Минимальная уверенность по странице, пустые поля не считаем."""
+    values = [int(v) for v in (scores or {}).values()
+              if isinstance(v, (int, float)) and v > 0]
+    return min(values) if values else None
+
+
+def save(record):
+    """Сохранить результат одной страницы. Возвращает id строки или None."""
+    if not ENABLED or not _ready:
+        return None
+
+    fields = record.get("fields") or {}
+    confidence = record.get("confidence") or {}
+    needs_review = record.get("needs_review") or []
+
+    row = (
+        record.get("request_id") or "",
+        record.get("created_at") or time.strftime("%Y-%m-%dT%H:%M:%S"),
+        record.get("source_name") or "",
+        record.get("source_type") or "",
+        record.get("page"),
+        record.get("pages_total"),
+        record.get("status") or "ok",
+        record.get("error") or "",
+        record.get("duration_seconds"),
+        record.get("mode") or "",
+        record.get("schema_name") or "",
+        record.get("text") or "",
+        json.dumps(fields, ensure_ascii=False),
+        json.dumps(confidence, ensure_ascii=False),
+        json.dumps(record.get("dict_status") or {}, ensure_ascii=False),
+        json.dumps(record.get("trace") or {}, ensure_ascii=False),
+        json.dumps(needs_review, ensure_ascii=False),
+        len(needs_review),
+        _minConfidence(confidence),
+        record.get("dict_version") or "",
+        record.get("model_name") or "",
+    )
+
+    sql = """INSERT INTO recognitions (
+        request_id, created_at, source_name, source_type, page, pages_total,
+        status, error, duration_seconds, mode, schema_name, text, fields_json,
+        confidence_json, dict_status_json, trace_json, needs_review_json,
+        review_count, min_confidence, dict_version, model_name
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"""
+
+    try:
+        with _lock, _connect() as conn:
+            cur = conn.execute(sql, row)
+            row_id = cur.lastrowid
+        log.debug("результат сохранён", extra={"row_id": row_id,
+                                               "page": record.get("page")})
+        return row_id
+    except sqlite3.Error as e:
+        log.warning("не удалось сохранить результат",
+                    extra={"error": str(e), "page": record.get("page")})
+        return None
+
+
+def listResults(limit=50, offset=0, date_from=None, date_to=None,
+                query=None, schema_name=None, status=None,
+                needs_review_only=False):
+    """Страница истории, новые первыми."""
+    if not _ready:
+        return {"total": 0, "items": [],
+                "error": _init_error or "хранилище недоступно"}
+
+    where, params = [], []
+    if date_from:
+        where.append("created_at >= ?")
+        params.append(date_from)
+    if date_to:
+        # Верхняя граница включительно по дате: клиент передаёт день, а не миг.
+        where.append("created_at <= ?")
+        params.append(date_to + "T23:59:59" if len(date_to) == 10 else date_to)
+    if query:
+        # Поиск по распознанному содержимому: и по тексту, и по значениям
+        # полей. LIKE в SQLite регистронезависим только для ASCII, поэтому
+        # кириллицу ищем в том регистре, в котором она записана.
+        where.append("(text LIKE ? OR fields_json LIKE ?)")
+        params += ["%" + query + "%"] * 2
+    if schema_name:
+        where.append("schema_name = ?")
+        params.append(schema_name)
+    if status:
+        where.append("status = ?")
+        params.append(status)
+    if needs_review_only:
+        where.append("review_count > 0")
+
+    clause = ("WHERE " + " AND ".join(where)) if where else ""
+
+    try:
+        with _lock, _connect() as conn:
+            total = conn.execute(
+                f"SELECT COUNT(*) FROM recognitions {clause}", params).fetchone()[0]
+            rows = conn.execute(
+                f"""SELECT id, request_id, created_at, source_name, source_type,
+                           page, pages_total, status, error, duration_seconds,
+                           mode, schema_name, substr(text, 1, 200) AS preview,
+                           review_count, min_confidence, dict_version,
+                           model_name
+                    FROM recognitions {clause}
+                    ORDER BY id DESC LIMIT ? OFFSET ?""",
+                params + [int(limit), int(offset)]).fetchall()
+        return {"total": total, "items": [dict(r) for r in rows]}
+    except sqlite3.Error as e:
+        log.warning("ошибка чтения истории", extra={"error": str(e)})
+        return {"total": 0, "items": [], "error": str(e)}
+
+
+def getByRequest(request_id):
+    """Все страницы одного запроса, с полными полями и трассировкой."""
+    if not _ready:
+        return []
+    try:
+        with _lock, _connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM recognitions WHERE request_id = ? ORDER BY page",
+                (request_id,)).fetchall()
+    except sqlite3.Error as e:
+        log.warning("ошибка чтения запроса",
+                    extra={"error": str(e), "target_request_id": request_id})
+        return []
+
+    out = []
+    for row in rows:
+        item = dict(row)
+        for key, target in (("fields_json", "fields"),
+                            ("confidence_json", "confidence"),
+                            ("dict_status_json", "dict_status"),
+                            ("trace_json", "trace"),
+                            ("needs_review_json", "needs_review")):
+            raw = item.pop(key, None)
+            try:
+                item[target] = json.loads(raw) if raw else None
+            except ValueError:
+                item[target] = None
+        out.append(item)
+    return out
+
+
+def stats():
+    """Сводка для /api/status: сколько всего, за сутки, сколько на проверке."""
+    if not _ready:
+        return {"enabled": ENABLED, "ready": False,
+                "path": DB_PATH, "error": _init_error}
+    try:
+        with _lock, _connect() as conn:
+            total = conn.execute("SELECT COUNT(*) FROM recognitions").fetchone()[0]
+            day = conn.execute(
+                "SELECT COUNT(*) FROM recognitions "
+                "WHERE created_at >= datetime('now', '-1 day')").fetchone()[0]
+            review = conn.execute(
+                "SELECT COUNT(*) FROM recognitions WHERE review_count > 0").fetchone()[0]
+            failed = conn.execute(
+                "SELECT COUNT(*) FROM recognitions WHERE status != 'ok'").fetchone()[0]
+            last = conn.execute(
+                "SELECT created_at FROM recognitions ORDER BY id DESC LIMIT 1").fetchone()
+        size = os.path.getsize(DB_PATH) if os.path.exists(DB_PATH) else 0
+        return {
+            "enabled": True,
+            "ready": True,
+            "path": DB_PATH,
+            "size_bytes": size,
+            "total": total,
+            "last_24h": day,
+            "needs_review": review,
+            "failed": failed,
+            "last_at": last[0] if last else None,
+        }
+    except (sqlite3.Error, OSError) as e:
+        return {"enabled": ENABLED, "ready": False, "path": DB_PATH, "error": str(e)}
