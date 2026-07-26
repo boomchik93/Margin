@@ -184,3 +184,55 @@ def save(record):
         log.warning("не удалось сохранить результат",
                     extra={"error": str(e), "page": record.get("page")})
         return None
+
+
+def listResults(limit=50, offset=0, date_from=None, date_to=None,
+                query=None, schema_name=None, status=None,
+                needs_review_only=False):
+    """Страница истории, новые первыми."""
+    if not _ready:
+        return {"total": 0, "items": [],
+                "error": _init_error or "хранилище недоступно"}
+
+    where, params = [], []
+    if date_from:
+        where.append("created_at >= ?")
+        params.append(date_from)
+    if date_to:
+        # Верхняя граница включительно по дате: клиент передаёт день, а не миг.
+        where.append("created_at <= ?")
+        params.append(date_to + "T23:59:59" if len(date_to) == 10 else date_to)
+    if query:
+        # Поиск по распознанному содержимому: и по тексту, и по значениям
+        # полей. LIKE в SQLite регистронезависим только для ASCII, поэтому
+        # кириллицу ищем в том регистре, в котором она записана.
+        where.append("(text LIKE ? OR fields_json LIKE ?)")
+        params += ["%" + query + "%"] * 2
+    if schema_name:
+        where.append("schema_name = ?")
+        params.append(schema_name)
+    if status:
+        where.append("status = ?")
+        params.append(status)
+    if needs_review_only:
+        where.append("review_count > 0")
+
+    clause = ("WHERE " + " AND ".join(where)) if where else ""
+
+    try:
+        with _lock, _connect() as conn:
+            total = conn.execute(
+                f"SELECT COUNT(*) FROM recognitions {clause}", params).fetchone()[0]
+            rows = conn.execute(
+                f"""SELECT id, request_id, created_at, source_name, source_type,
+                           page, pages_total, status, error, duration_seconds,
+                           mode, schema_name, substr(text, 1, 200) AS preview,
+                           review_count, min_confidence, dict_version,
+                           model_name
+                    FROM recognitions {clause}
+                    ORDER BY id DESC LIMIT ? OFFSET ?""",
+                params + [int(limit), int(offset)]).fetchall()
+        return {"total": total, "items": [dict(r) for r in rows]}
+    except sqlite3.Error as e:
+        log.warning("ошибка чтения истории", extra={"error": str(e)})
+        return {"total": 0, "items": [], "error": str(e)}
