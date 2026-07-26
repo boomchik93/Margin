@@ -236,3 +236,67 @@ def listResults(limit=50, offset=0, date_from=None, date_to=None,
     except sqlite3.Error as e:
         log.warning("ошибка чтения истории", extra={"error": str(e)})
         return {"total": 0, "items": [], "error": str(e)}
+
+
+def getByRequest(request_id):
+    """Все страницы одного запроса, с полными полями и трассировкой."""
+    if not _ready:
+        return []
+    try:
+        with _lock, _connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM recognitions WHERE request_id = ? ORDER BY page",
+                (request_id,)).fetchall()
+    except sqlite3.Error as e:
+        log.warning("ошибка чтения запроса",
+                    extra={"error": str(e), "target_request_id": request_id})
+        return []
+
+    out = []
+    for row in rows:
+        item = dict(row)
+        for key, target in (("fields_json", "fields"),
+                            ("confidence_json", "confidence"),
+                            ("dict_status_json", "dict_status"),
+                            ("trace_json", "trace"),
+                            ("needs_review_json", "needs_review")):
+            raw = item.pop(key, None)
+            try:
+                item[target] = json.loads(raw) if raw else None
+            except ValueError:
+                item[target] = None
+        out.append(item)
+    return out
+
+
+def stats():
+    """Сводка для /api/status: сколько всего, за сутки, сколько на проверке."""
+    if not _ready:
+        return {"enabled": ENABLED, "ready": False,
+                "path": DB_PATH, "error": _init_error}
+    try:
+        with _lock, _connect() as conn:
+            total = conn.execute("SELECT COUNT(*) FROM recognitions").fetchone()[0]
+            day = conn.execute(
+                "SELECT COUNT(*) FROM recognitions "
+                "WHERE created_at >= datetime('now', '-1 day')").fetchone()[0]
+            review = conn.execute(
+                "SELECT COUNT(*) FROM recognitions WHERE review_count > 0").fetchone()[0]
+            failed = conn.execute(
+                "SELECT COUNT(*) FROM recognitions WHERE status != 'ok'").fetchone()[0]
+            last = conn.execute(
+                "SELECT created_at FROM recognitions ORDER BY id DESC LIMIT 1").fetchone()
+        size = os.path.getsize(DB_PATH) if os.path.exists(DB_PATH) else 0
+        return {
+            "enabled": True,
+            "ready": True,
+            "path": DB_PATH,
+            "size_bytes": size,
+            "total": total,
+            "last_24h": day,
+            "needs_review": review,
+            "failed": failed,
+            "last_at": last[0] if last else None,
+        }
+    except (sqlite3.Error, OSError) as e:
+        return {"enabled": ENABLED, "ready": False, "path": DB_PATH, "error": str(e)}
