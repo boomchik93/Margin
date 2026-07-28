@@ -299,3 +299,15 @@ class LlamaServer:
             "tokens": len(toks),
             "image": os.path.basename(image_path)})
         return text, toks
+
+
+def findServer(llama_path):
+    """Путь к llama-server рядом с основным бинарником, или None."""
+    if not llama_path:
+        return None
+    base = os.path.dirname(llama_path)
+    for name in ("llama-server", "llama-server.exe"):
+        cand = os.path.join(base, name)
+        if os.path.exists(cand):
+            return cand
+    return None
