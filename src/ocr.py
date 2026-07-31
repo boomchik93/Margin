@@ -242,3 +242,26 @@ def loadConfig():
 
     return {"server": server, "ocr": ocr, "hardware": hardware,
             "paths": paths, "api": api}
+
+
+def findLlama(config):
+    """Путь к llama-mtmd-cli."""
+    if config["paths"]["llama_executable"] != "auto":
+        return config["paths"]["llama_executable"]
+
+    if "LLAMA_CLI_PATH" in os.environ:
+        return os.environ["LLAMA_CLI_PATH"]
+
+    if platform.system() == "Windows":
+        names = ["llama.cpp/build/bin/Release/llama-mtmd-cli.exe"]
+    else:
+        names = ["llama.cpp/build/bin/llama-mtmd-cli"]
+
+    candidates = []
+    for name in names:
+        candidates.append(os.path.join(PROJECT_ROOT, name))
+        candidates.append(os.path.join(".", name))
+    for path in candidates:
+        if os.path.exists(path):
+            return path
+    return candidates[0]
