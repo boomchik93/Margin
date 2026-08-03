@@ -265,3 +265,123 @@ def findLlama(config):
         if os.path.exists(path):
             return path
     return candidates[0]
+
+
+def _findNvidiaSmi():
+    """Путь к nvidia-smi."""
+    import shutil
+    found = shutil.which("nvidia-smi")
+    if found:
+        return found
+    for cand in ("/usr/lib/wsl/lib/nvidia-smi",
+                 "/usr/local/nvidia/bin/nvidia-smi",
+                 "/usr/bin/nvidia-smi"):
+        if os.path.exists(cand):
+            return cand
+    return None
+
+
+def getHardware(config):
+    """Определяет железо и раскладку модели по нему."""
+    has_nvidia = False
+    nvidia_vram = 0
+    nvidia_vram_total = 0
+    cpu_cores = 1
+    total_ram = 8
+
+    smi = _findNvidiaSmi()
+    if smi:
+        try:
+            result = subprocess.run(
+                [smi, "--query-gpu=memory.total,memory.free",
+                 "--format=csv,noheader,nounits"],
+                capture_output=True, text=True, timeout=10)
+            if result.returncode == 0 and result.stdout.strip():
+                has_nvidia = True
+                parts = result.stdout.strip().split("\n")[0].split(",")
+                total_mb = int(float(parts[0]))
+                free_mb = int(float(parts[1])) if len(parts) > 1 else total_mb
+                nvidia_vram = free_mb // 1024
+                nvidia_vram_total = total_mb // 1024
+        except Exception:
+            pass
+
+    try:
+        import multiprocessing
+        cpu_cores = multiprocessing.cpu_count()
+    except Exception:
+        pass
+
+    try:
+        import psutil
+        total_ram = psutil.virtual_memory().total // (1024 ** 3)
+    except Exception:
+        pass
+
+    hw = config["hardware"]
+    force_cpu = hw.get("force_cpu", False)
+    force_gpu = hw.get("force_gpu", False)
+
+    # выбор устройства: явные флаги имеют приоритет, затем device, затем авто
+    device = str(hw.get("device", "auto")).lower()
+    if force_cpu:
+        device = "cpu"
+    elif force_gpu:
+        device = "gpu"
+    elif device in ("auto", ""):
+        device = "gpu" if has_nvidia and nvidia_vram >= 4 else "cpu"
+    elif device == "cuda":
+        device = "gpu"
+
+    if device == "gpu" and not has_nvidia and not force_gpu:
+        # Тихий откат на CPU — худший вид отказа: сервис работает, но
+        # страница обрабатывается минутами вместо секунд, и причина не видна
+        # нигде.
+        log.warning("запрошен GPU, но NVIDIA не найдена — работаем на CPU, "
+                    "распознавание будет в разы медленнее")
+        device = "cpu"
+
+    gpu_layers = str(hw.get("gpu_layers", "auto"))
+    if gpu_layers == "auto":
+        # Считаем по ОБЩЕЙ памяти карты, а не по свободной в эту секунду.
+        # Свободная зависит от того, что запущено рядом прямо сейчас, и
+        # порог перескакивает между запусками. Частичная выгрузка на CPU не
+        # просто замедляет, она роняет качество чтения. Лучше упереться в
+        # нехватку памяти явно, чем молча читать хуже.
+        vram = nvidia_vram_total or nvidia_vram
+        if device == "cpu":
+            gpu_layers = "0"
+        elif vram >= 11:
+            gpu_layers = "99"
+        elif vram >= 8:
+            gpu_layers = "35"
+        elif vram >= 4:
+            gpu_layers = "20"
+        else:
+            gpu_layers = "99" if force_gpu else "0"
+
+        if (nvidia_vram_total and nvidia_vram
+                and nvidia_vram < nvidia_vram_total * 0.6):
+            log.warning("свободной видеопамяти заметно меньше общей, "
+                        "модель может не поместиться целиком",
+                        extra={"vram_total_gb": nvidia_vram_total,
+                               "vram_free_gb": nvidia_vram,
+                               "gpu_layers": gpu_layers})
+
+    threads = str(hw.get("cpu_threads", "auto"))
+    if threads == "auto":
+        threads = str(max(1, cpu_cores - 1))
+
+    result = {
+        "device": device,
+        "gpu_layers": str(gpu_layers),
+        "cpu_threads": str(threads),
+        "gpu_count": str(hw.get("gpu_count", "1")),
+        "has_nvidia": has_nvidia,
+        "vram_gb": nvidia_vram,
+        "vram_total_gb": nvidia_vram_total,
+        "cpu_cores": cpu_cores,
+        "total_ram": total_ram,
+    }
+    log.info("железо определено", extra=dict(result))
+    return result
