@@ -385,3 +385,36 @@ def getHardware(config):
     }
     log.info("железо определено", extra=dict(result))
     return result
+
+
+# === PDF ===
+
+def extractImagesFromPdf(pdf_path, scale=2.0):
+    """Рендер страниц PDF в отдельные PNG. Возвращает [{"page", "path"}]."""
+    if not HAS_FITZ:
+        log.error("PyMuPDF не установлен, PDF обрабатывать нечем",
+                  extra={"pdf": os.path.basename(pdf_path)})
+        return []
+
+    images = []
+    total = 0
+    with stage(log, "pdf_extract", pdf=os.path.basename(pdf_path)) as st:
+        try:
+            doc = fitz.open(pdf_path)
+            total = len(doc)
+            for page_num in range(total):
+                page = doc.load_page(page_num)
+                pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale))
+                tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
+                tmp.write(pix.tobytes("png"))
+                tmp.close()
+                images.append({"page": page_num + 1, "path": tmp.name})
+            doc.close()
+        except Exception as e:
+            log.error("рендер PDF прерван",
+                      extra={"pdf": os.path.basename(pdf_path),
+                             "rendered": len(images), "expected": total,
+                             "error": str(e)}, exc_info=True)
+        st.add(pages_expected=total, pages_rendered=len(images))
+
+    return images
