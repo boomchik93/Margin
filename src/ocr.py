@@ -559,3 +559,49 @@ def cropRegion(image_path, box):
             "error": str(e), "box": list(box),
             "image": os.path.basename(image_path)})
         return None
+
+
+# === ГОЛОСОВАНИЕ ===
+
+def charVote(values):
+    """Значение по большинству голосов, посимвольно.
+
+    Проходы ошибаются в разных символах, поэтому итог собирается по
+    большинству в каждой позиции и может не совпасть ни с одним голосом
+    целиком.
+    """
+    vals = [str(v).strip() for v in values if str(v or "").strip()]
+    if not vals:
+        return ""
+
+    # Посимвольно сводятся только голоса преобладающей длины: пропущенный
+    # символ сдвигает всё, что правее.
+    counts = {}
+    for v in vals:
+        counts[len(v)] = counts.get(len(v), 0) + 1
+    best_len = max(counts, key=lambda n: (counts[n], -n))
+    same = [v for v in vals if len(v) == best_len]
+
+    if len(same) < 2:
+        freq = {}
+        for v in vals:
+            freq[v] = freq.get(v, 0) + 1
+        return max(freq, key=lambda v: freq[v])
+
+    out = []
+    for i in range(best_len):
+        tally = {}
+        for v in same:
+            tally[v[i]] = tally.get(v[i], 0) + 1
+        ranked = sorted(tally.items(), key=lambda kv: -kv[1])
+        if len(ranked) > 1 and ranked[0][1] == ranked[1][1]:
+            # ничья: побеждает первый голос — он от самого крупного кропа
+            out.append(same[0][i])
+        else:
+            out.append(ranked[0][0])
+    return "".join(out)
+
+
+def _voteKey(value):
+    """Значение в виде, пригодном для сравнения голосов между собой."""
+    return re.sub(r"\s+", " ", str(value or "")).strip().upper().replace("Ё", "Е")
