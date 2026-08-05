@@ -536,3 +536,26 @@ def preprocessImage(image_path, target_long_side=2200):
                   extra={"error": str(e),
                          "image": os.path.basename(image_path)}, exc_info=True)
         return image_path
+
+
+def cropRegion(image_path, box):
+    """Вырезает зону по долям страницы (x0, y0, x1, y1 в диапазоне 0..1)."""
+    try:
+        img = Image.open(image_path)
+        if img.mode != "RGB":
+            img = img.convert("RGB")
+        w, h = img.size
+        x0, y0, x1, y1 = box
+        left, top = max(0, int(x0 * w)), max(0, int(y0 * h))
+        right, bottom = min(w, int(x1 * w)), min(h, int(y1 * h))
+        if right - left < 10 or bottom - top < 10:
+            return None
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
+        tmp.close()
+        img.crop((left, top, right, bottom)).save(tmp.name, "PNG")
+        return tmp.name
+    except Exception as e:
+        log.warning("кроп зоны не удался", extra={
+            "error": str(e), "box": list(box),
+            "image": os.path.basename(image_path)})
+        return None
