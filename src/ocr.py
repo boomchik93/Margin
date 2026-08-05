@@ -490,3 +490,49 @@ def extractJson(output):
             return json.loads(cleaned)
         except Exception:
             return None
+
+
+# === ПРЕДОБРАБОТКА ИЗОБРАЖЕНИЯ ===
+
+def preprocessImage(image_path, target_long_side=2200):
+    """Готовит изображение для модели: апскейл, контраст, шумоподавление.
+
+    Возвращает путь к временному PNG либо исходный путь, если предобработка
+    не удалась: исходник хуже подготовленного, но много лучше отказа.
+    """
+    try:
+        img = Image.open(image_path)
+        if img.mode != "RGB":
+            img = img.convert("RGB")
+
+        w, h = img.size
+        long_side = max(w, h)
+        # Апскейлим маленькие сканы, но не раздуваем уже крупные. Информации
+        # апскейл не добавляет, но даёт модели больше визуальных токенов на
+        # символ.
+        if long_side < target_long_side:
+            scale = min(target_long_side / float(long_side), 3.0)
+            img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+
+        if HAS_CV2:
+            gray = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2GRAY)
+            # CLAHE — локальное выравнивание контраста: вытягивает бледную
+            # пасту, не пересвечивая фон.
+            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+            gray = clahe.apply(gray)
+            # Зерно скана модель принимает за штрихи букв.
+            gray = cv2.fastNlMeansDenoising(gray, None, 7, 7, 21)
+            img = Image.fromarray(cv2.cvtColor(gray, cv2.COLOR_GRAY2RGB))
+        else:
+            img = ImageEnhance.Contrast(img).enhance(1.4)
+            img = ImageEnhance.Sharpness(img).enhance(1.3)
+
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
+        tmp.close()
+        img.save(tmp.name, "PNG")
+        return tmp.name
+    except Exception as e:
+        log.error("предобработка не удалась, распознаём исходный файл",
+                  extra={"error": str(e),
+                         "image": os.path.basename(image_path)}, exc_info=True)
+        return image_path
