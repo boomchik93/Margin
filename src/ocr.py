@@ -418,3 +418,75 @@ def extractImagesFromPdf(pdf_path, scale=2.0):
         st.add(pages_expected=total, pages_rendered=len(images))
 
     return images
+
+
+# === ИЗВЛЕЧЕНИЕ JSON ===
+
+_CHAT_TOKENS = ("<|im_end|>", "<|endoftext|>", "<|im_start|>")
+
+
+def cleanOutput(output):
+    """Ответ модели без служебных токенов чата и markdown-обёрток."""
+    text = output or ""
+    if "<|im_start|>assistant" in text:
+        text = text.split("<|im_start|>assistant")[-1]
+    for token in _CHAT_TOKENS:
+        if token in text:
+            text = text.split(token)[0]
+
+    if "```json" in text:
+        text = text.split("```json", 1)[1]
+        text = text.split("```", 1)[0]
+    elif "```" in text:
+        parts = text.split("```")
+        if len(parts) >= 3:
+            text = parts[1]
+    return text.strip()
+
+
+def extractJson(output):
+    """Достаёт JSON-объект из сырого вывода модели максимально устойчиво."""
+    if not output:
+        return None
+    text = cleanOutput(output)
+
+    # выделяем сбалансированный {...} с учётом строк и экранирования
+    start = text.find("{")
+    if start == -1:
+        return None
+    brace = 0
+    end = -1
+    in_str = False
+    esc = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            brace += 1
+        elif ch == "}":
+            brace -= 1
+            if brace == 0:
+                end = i + 1
+                break
+    if end <= start:
+        return None
+
+    candidate = text[start:end]
+    try:
+        return json.loads(candidate)
+    except Exception:
+        # пробуем подчистить хвостовые запятые
+        cleaned = re.sub(r",\s*([}\]])", r"\1", candidate)
+        try:
+            return json.loads(cleaned)
+        except Exception:
+            return None
