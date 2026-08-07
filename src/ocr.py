@@ -668,3 +668,67 @@ def parseLines(raw):
     # разобранного ответа, но лучше пустого — текст клиент всё равно получит.
     text = cleanOutput(raw)
     return [s.strip() for s in text.splitlines() if s.strip()], False
+
+
+def recognizeText(read, image_path, config, language=None, printed=False):
+    """Свободная расшифровка страницы.
+
+    `read(prompt, image_path, n_predict, tag)` — вызов модели, возвращает
+    (текст, токены_с_вероятностями).
+    """
+    started = time.time()
+    timings = {}
+    temp_files = []
+    language = language or config["ocr"].get("language", "ru")
+    try:
+        t0 = time.time()
+        proc_path = preprocessImage(image_path,
+                                    config["ocr"].get("target_long_side", 2200))
+        timings["preprocess"] = round(time.time() - t0, 2)
+        if proc_path != image_path:
+            temp_files.append(proc_path)
+
+        t0 = time.time()
+        raw, tokens = read(textPrompt(language, printed), proc_path,
+                           config["ocr"].get("max_tokens", 4096), "text")
+        timings["model"] = round(time.time() - t0, 2)
+
+        lines, parsed = parseLines(raw)
+        if not parsed and raw:
+            log.warning("ответ не разобран как JSON, текст взят как есть",
+                        extra={"output_chars": len(raw),
+                               "output_head": raw[:300]})
+
+        result = {
+            "mode": "text",
+            "parsed": bool(parsed and raw),
+            "text": "\n".join(lines),
+            "lines": lines,
+            "unclear_count": sum(s.count(UNCLEAR_MARK) for s in lines),
+        }
+
+        # Уверенность чтения по строкам: минимум logprob по токенам строки.
+        # Есть только на пути через llama-server.
+        if parsed and tokens:
+            try:
+                measured = logprobs.fieldLogprobs(tokens, raw)
+                line_lp = [measured.get("lines[%d]" % i, (None, 0))[0]
+                           for i in range(len(lines))]
+                # Индексы совпадают со строками ответа только если ни одна
+                # строка не была отброшена как пустая.
+                raw_data = extractJson(raw) or {}
+                if len(raw_data.get("lines") or []) == len(lines):
+                    result["line_logprob_min"] = line_lp
+            except Exception as e:
+                log.debug("вероятности чтения не разобраны",
+                          extra={"error": str(e)})
+
+        timings["total"] = round(time.time() - started, 2)
+        result["timings"] = timings
+        log.info("расшифровка завершена", extra={
+            "image": os.path.basename(image_path), "lines": len(lines),
+            "unclear": result["unclear_count"], "parsed": result["parsed"],
+            "timings": timings})
+        return result
+    finally:
+        _removeFiles(temp_files)
