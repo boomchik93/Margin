@@ -762,3 +762,117 @@ def _mergeZone(sch, result, zdata, keys, override=False):
         zv = "" if zv is None else str(zv).strip()
         if zv and (override or not result.get(key)):
             result[key] = zv
+
+
+def recognizeForm(read, image_path, sch, config):
+    """Многопроходное чтение полей: страница целиком, зоны, голосование.
+
+    Возвращает (значения_как_прочитаны, служебные_сведения).
+    """
+    started = time.time()
+    timings = {}
+    temp_files = []
+    use_zones = bool(config["ocr"].get("fragmentation", True)) and sch["zones"]
+    try:
+        # 1) предобработка
+        t0 = time.time()
+        proc_path = preprocessImage(image_path,
+                                    config["ocr"].get("target_long_side", 2200))
+        timings["preprocess"] = round(time.time() - t0, 2)
+        if proc_path != image_path:
+            temp_files.append(proc_path)
+
+        # 2) полностраничный проход
+        t0 = time.time()
+        raw, tokens = read(schemas.fullPrompt(sch), proc_path, 2000, "full")
+        timings["full_pass"] = round(time.time() - t0, 2)
+        base = extractJson(raw)
+        if base is None:
+            # Модель ответила, но JSON не собрался. Отличать от «не ответила»
+            # важно: первое чинится промптом, второе — железом.
+            log.warning("ответ основного прохода не разобран как JSON",
+                        extra={"output_chars": len(raw or ""),
+                               "output_head": (raw or "")[:300]})
+        result = schemas.enforce(sch, base or {})
+
+        measured = {}
+        if tokens and raw:
+            try:
+                measured = logprobs.fieldLogprobs(tokens, raw)
+            except Exception as e:
+                log.debug("вероятности чтения не разобраны",
+                          extra={"error": str(e)})
+
+        # 3) прицельные проходы по зонам: на кропе символы крупнее и
+        #    читаются точнее
+        zone_votes = {}
+        zones_done = zones_failed = 0
+        if use_zones:
+            t_zones = time.time()
+            for zone in sch["zones"]:
+                crop_path = cropRegion(proc_path, zone["box"])
+                if not crop_path:
+                    zones_failed += 1
+                    log.warning("кроп зоны не построен, зона пропущена",
+                                extra={"zone": zone["name"]})
+                    continue
+                temp_files.append(crop_path)
+
+                for n, prompt in enumerate(schemas.zonePrompts(sch, zone), 1):
+                    tag = zone["name"] + ("-%d" % n if zone["vote"] else "")
+                    zraw, _ = read(prompt, crop_path, 512, tag)
+                    zdata = extractJson(zraw)
+                    if not isinstance(zdata, dict):
+                        if zraw:
+                            zones_failed += 1
+                            log.warning("ответ зоны не разобран как JSON",
+                                        extra={"zone": tag,
+                                               "output_head": zraw[:300]})
+                        continue
+                    zones_done += 1
+                    if zone["vote"]:
+                        key = zone["fields"][0]
+                        val = zdata.get(key)
+                        if isinstance(val, (str, int, float)) and str(val).strip():
+                            zone_votes.setdefault(key, []).append(
+                                str(val).strip())
+                    else:
+                        _mergeZone(sch, result, zdata, zone["fields"],
+                                   override=zone["override"])
+            timings["zones"] = round(time.time() - t_zones, 2)
+            log.info("зонные проходы завершены", extra={
+                "seconds": timings["zones"], "zones_total": len(sch["zones"]),
+                "passes_recognized": zones_done, "passes_failed": zones_failed})
+
+        # 4) сведение голосов. Одного голоса мало: он равноправен основному
+        #    проходу, и выбрать между ними не из чего.
+        votes = {}
+        for key, zvotes in zone_votes.items():
+            if len(zvotes) < 2:
+                continue
+            base_val = str(result.get(key) or "").strip()
+            all_votes = zvotes + ([base_val] if base_val else [])
+            merged = charVote(all_votes)
+            if not merged:
+                continue
+            agree = sum(1 for v in all_votes if _voteKey(v) == _voteKey(merged))
+            votes[key] = {"total": len(all_votes), "agree": agree}
+            # Единственное место, где итог может не совпасть ни с одним
+            # проходом: без списка голосов значение выглядит взявшимся
+            # ниоткуда.
+            log.info("значение собрано голосованием проходов", extra={
+                "field": key, "votes": all_votes, "result": merged,
+                "replaced": result.get(key)})
+            result[key] = merged
+            # Вероятность основного прохода к собранному значению больше не
+            # относится: она измерена для другой строки.
+            measured.pop(key, None)
+
+        timings["total"] = round(time.time() - started, 2)
+        log.info("чтение полей завершено", extra={
+            "image": os.path.basename(image_path), "schema": sch["name"],
+            "timings": timings})
+        return result, {"parsed": base is not None, "timings": timings,
+                        "votes": votes, "logprobs": measured}
+    finally:
+        _removeFiles(temp_files)
