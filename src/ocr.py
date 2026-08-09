@@ -876,3 +876,75 @@ def recognizeForm(read, image_path, sch, config):
                         "votes": votes, "logprobs": measured}
     finally:
         _removeFiles(temp_files)
+
+
+def postprocessForm(sch, recognized, meta=None):
+    """Нормализация, сверка со словарями, уверенность, очередь проверки."""
+    meta = meta or {}
+    recognized = schemas.enforce(sch, recognized)
+
+    normalized = normalize.normalizeResult(sch, recognized)
+
+    # Сверка идёт последней и по уже нормализованному значению. Новый словарь
+    # в директории должен подействовать на следующей странице, а не после
+    # рестарта.
+    try:
+        dictmatch.ensureFresh()
+    except Exception as e:
+        log.warning("не удалось проверить обновление словарей",
+                    extra={"error": str(e)})
+    final, dict_status, candidates = dictmatch.applyDictionaries(
+        sch, normalized)
+
+    # Оценивается прочитанное моделью, а не подстановка словаря.
+    scores, reasons = confidence.scoreResult(sch, normalized)
+    needs_review = confidence.reviewQueue(sch, final, scores, dict_status)
+
+    # Трассировка стадий: что прочитала модель, что изменила нормализация и
+    # что подставил словарь. По одному итоговому значению не видно, чья это
+    # работа.
+    trace = {}
+    for field in sch["fields"]:
+        key = field["key"]
+        steps = {"recognized": recognized.get(key),
+                 "normalized": normalized.get(key),
+                 "final": final.get(key)}
+        if key in dict_status:
+            steps["dict"] = dict_status[key]
+        if key in (meta.get("votes") or {}):
+            steps["votes"] = meta["votes"][key]
+        trace[key] = steps
+
+    result = {
+        "mode": "form",
+        "schema": sch["name"],
+        "parsed": bool(meta.get("parsed", True)),
+        "fields": final,
+        "confidence": scores,
+        "confidence_reason": reasons,
+        "dict_status": dict_status,
+        "candidates": candidates,
+        "needs_review": needs_review,
+        "trace": trace,
+        "dict_version": dictmatch.dictVersion(),
+        "timings": meta.get("timings") or {},
+    }
+    measured = meta.get("logprobs") or {}
+    if measured:
+        result["logprob_min"] = {k: v[0] for k, v in measured.items()
+                                 if k in final}
+
+    changed = sorted(k for k in final
+                     if str(recognized.get(k) or "") != str(final.get(k) or ""))
+    log.info("постобработка завершена", extra={
+        "schema": sch["name"], "changed_fields": changed,
+        "needs_review": needs_review})
+    return result
+
+
+def _removeFiles(paths):
+    for path in paths:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
