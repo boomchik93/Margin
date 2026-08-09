@@ -732,3 +732,33 @@ def recognizeText(read, image_path, config, language=None, printed=False):
         return result
     finally:
         _removeFiles(temp_files)
+
+
+# === ПОЛЯ ПО СХЕМЕ ===
+
+def _mergeZone(sch, result, zdata, keys, override=False):
+    """Сливает ответ зонного прохода в основной результат.
+
+    По умолчанию зона только заполняет пустое: она дополняет общий проход,
+    но не затирает его. С override ответ зоны замещает общий — это для зон,
+    где кроп настолько крупнее, что читается надёжнее страницы целиком.
+    """
+    types = {f["key"]: f["type"] for f in sch["fields"]}
+    for key in keys:
+        if key not in zdata:
+            continue
+        if types[key] == "checkbox":
+            mark = schemas.toCheckbox(zdata.get(key))
+            # У отметки нет «пустого» значения, поэтому правило «непустое
+            # побеждает» тут не работает. Ответ зоны принимается, когда он
+            # определённее прежнего: unclear уступает checked и unchecked.
+            if override or (result.get(key) == schemas.UNCLEAR
+                            and mark != schemas.UNCLEAR):
+                result[key] = mark
+            continue
+        zv = zdata.get(key)
+        if isinstance(zv, (dict, list)):
+            continue
+        zv = "" if zv is None else str(zv).strip()
+        if zv and (override or not result.get(key)):
+            result[key] = zv
