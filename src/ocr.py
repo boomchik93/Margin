@@ -948,3 +948,205 @@ def _removeFiles(paths):
             os.remove(path)
         except OSError:
             pass
+
+
+# === ДВИЖОК ===
+
+class Engine:
+    """Модель, её способ вызова и чтение страниц.
+
+    Один объект на процесс: его держит и HTTP-сервис, и папочная обвязка.
+    """
+
+    def __init__(self, config=None):
+        self.config = config or loadConfig()
+        self.hardware = getHardware(self.config)
+        self.llama_path = findLlama(self.config)
+        paths = self.config["paths"]
+        self.model_name = paths["model_file"]
+        self.model_path = os.path.join(paths["models_folder"],
+                                       paths["model_file"])
+        self.mmproj_path = os.path.join(paths["models_folder"],
+                                        paths["mmproj_file"])
+        self.gpu_layers = self.hardware["gpu_layers"]
+        self.server = None
+        self._server_failed = False
+        # Страницы читаются строго по одной: видеокарта одна, а модель не
+        # ускоряется от параллельных запросов, только делит между ними память.
+        self._lock = threading.Lock()
+
+    # --- готовность ---
+
+    def modelExists(self):
+        return (os.path.exists(self.model_path)
+                and os.path.exists(self.mmproj_path))
+
+    def llamaExists(self):
+        return os.path.exists(self.llama_path)
+
+    def ready(self):
+        return self.modelExists() and self.llamaExists()
+
+    @property
+    def backend(self):
+        """Чем фактически идёт чтение: server или cli."""
+        return "server" if self.server is not None else "cli"
+
+    # --- llama-server ---
+
+    def startServer(self, port=None):
+        """Поднимает llama-server. False — чтение пойдёт через CLI."""
+        if self.server is not None:
+            return True
+        binary = llamaserver.findServer(self.llama_path)
+        if binary is None:
+            log.warning("llama-server не найден рядом с llama-mtmd-cli, "
+                        "чтение пойдёт через CLI без logprob_min",
+                        extra={"llama_path": self.llama_path})
+            return False
+        server = llamaserver.LlamaServer(
+            binary, self.model_path, self.mmproj_path, self.gpu_layers,
+            self.config["ocr"]["context_length"],
+            port=port or int(os.environ.get("LLAMA_SERVER_PORT") or 8099),
+            threads=self.hardware["cpu_threads"])
+        if not server.start():
+            log.warning("llama-server не поднялся, чтение пойдёт через CLI "
+                        "без logprob_min")
+            return False
+        self.server = server
+        return True
+
+    def stop(self):
+        if self.server is not None:
+            self.server.stop()
+            self.server = None
+
+    def _ensureBackend(self):
+        """Ленивый подъём сервера при первом чтении, если он выбран в конфиге.
+
+        Лениво, а не при старте процесса: сервис должен подниматься и
+        отвечать на /api/status даже без файла модели.
+        """
+        if (self.config["ocr"].get("backend") == "server"
+                and self.server is None and not self._server_failed):
+            if not self.startServer():
+                # Не пробуем заново на каждом запросе: подъём занимает до
+                # нескольких минут, и очередь встала бы на нём.
+                self._server_failed = True
+
+    # --- вызов модели ---
+
+    def read(self, prompt, image_path, n_predict=2000, tag="full"):
+        """Один проход модели. Возвращает (текст, токены_с_вероятностями)."""
+        ocr = self.config["ocr"]
+        if self.server is not None:
+            text, tokens = self.server.read(
+                prompt, image_path, n_predict=n_predict,
+                temperature=ocr["temperature"], timeout=ocr["timeout"] or None)
+            if text:
+                saveRawOutput(tag, text)
+            return text, tokens
+        return self._readCli(prompt, image_path, n_predict, tag), []
+
+    def _readCli(self, prompt, image_path, n_predict, tag):
+        ocr = self.config["ocr"]
+        cmd = [
+            self.llama_path,
+            "-m", self.model_path,
+            "--mmproj", self.mmproj_path,
+            "--image", image_path,
+            "-p", prompt,
+            "-n", str(n_predict),
+            "--temp", str(ocr["temperature"]),
+            "-c", str(ocr["context_length"]),
+            "-b", "2048",
+            "-ub", "512",
+            "-ngl", self.gpu_layers,
+            "--mmproj-offload",
+            "--threads", self.hardware["cpu_threads"],
+            "--no-warmup",
+            # Штраф за повтор отключён: в документах законно повторяются
+            # одинаковые значения и цифры, и штраф искажал бы второе.
+            "--repeat-penalty", "1.0",
+            "--min-p", "0.05",
+        ]
+        timeout = ocr["timeout"] or None
+        started = time.time()
+        log.debug("вызов модели", extra={
+            "pass": tag, "image": os.path.basename(image_path),
+            "n_predict": n_predict, "gpu_layers": self.gpu_layers,
+            "timeout": timeout})
+
+        try:
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, encoding="utf-8",
+                errors="replace", timeout=timeout)
+        except subprocess.TimeoutExpired:
+            log.error("таймаут вызова модели, проход пропущен", extra={
+                "pass": tag, "seconds": round(time.time() - started, 2),
+                "timeout": timeout, "image": os.path.basename(image_path)})
+            return ""
+        except Exception as e:
+            log.error("вызов модели не состоялся", extra={
+                "pass": tag, "llama_path": self.llama_path,
+                "error": str(e)}, exc_info=True)
+            return ""
+
+        elapsed = round(time.time() - started, 2)
+        if result.returncode != 0:
+            # stderr llama.cpp длинный и в основном шумовой; в лог идёт
+            # хвост, где лежит собственно ошибка (нехватка VRAM, битый gguf).
+            log.error("модель завершилась с ошибкой", extra={
+                "pass": tag, "seconds": elapsed,
+                "returncode": result.returncode,
+                "stderr_tail": (result.stderr or "").strip()[-1000:],
+                "image": os.path.basename(image_path)})
+            return ""
+
+        output = (result.stdout or "").strip()
+        if not output:
+            log.warning("модель вернула пустой ответ", extra={
+                "pass": tag, "seconds": elapsed,
+                "image": os.path.basename(image_path)})
+            return ""
+
+        raw_path = saveRawOutput(tag, output)
+        log.info("проход модели завершён", extra={
+            "pass": tag, "seconds": elapsed, "output_chars": len(output),
+            **({"raw_output": raw_path} if raw_path else {})})
+        return output
+
+    # --- страница ---
+
+    def readPage(self, image_path, sch=None, language=None, printed=False):
+        """Читает одну страницу. Возвращает словарь результата.
+
+        Со схемой — поля (`mode: form`), без неё — свободный текст
+        (`mode: text`). Сбой чтения не бросает исключение: страница
+        возвращается с `error`, а для схемы ещё и с полным набором пустых
+        полей — клиент всегда получает одну и ту же структуру.
+        """
+        with self._lock:
+            self._ensureBackend()
+            try:
+                if sch is None:
+                    result = recognizeText(self.read, image_path, self.config,
+                                           language=language, printed=printed)
+                else:
+                    recognized, meta = recognizeForm(self.read, image_path,
+                                                     sch, self.config)
+                    result = postprocessForm(sch, recognized, meta)
+            except Exception as e:
+                log.error("чтение страницы прервано", extra={
+                    "image": os.path.basename(image_path),
+                    "error": str(e)}, exc_info=True)
+                if sch is None:
+                    result = {"mode": "text", "parsed": False, "text": "",
+                              "lines": [], "unclear_count": 0, "timings": {}}
+                else:
+                    result = postprocessForm(sch, schemas.emptyResult(sch),
+                                             {"parsed": False})
+                result["error"] = "recognition_failed"
+            result["backend"] = self.backend
+            result["model"] = self.model_name
+            return result
