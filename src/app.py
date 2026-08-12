@@ -441,3 +441,49 @@ def status():
         },
         "request_id": logging_setup.getRequestId(),
     })
+
+
+@app.route("/api/schemas")
+def listSchemas():
+    """Список схем
+    ---
+    tags: [Схемы]
+    summary: Какие схемы документов загружены
+    description: >
+      Схемы читаются из `config/schemas/*.json`; имя файла без расширения —
+      имя схемы для параметра `schema`. Файлы, не прошедшие проверку, видны
+      в `errors` с причиной.
+    responses:
+      200:
+        description: Загруженные схемы и ошибки загрузки
+    """
+    loaded = schemas.listSchemas()
+    return jsonify({
+        "dir": schemas.SCHEMA_DIR,
+        "schemas": [schemas.describe(loaded[name]) for name in sorted(loaded)],
+        "errors": schemas.loadErrors(),
+        "request_id": logging_setup.getRequestId(),
+    })
+
+
+@app.route("/api/schemas/<name>")
+def schemaDetail(name):
+    """Одна схема
+    ---
+    tags: [Схемы]
+    summary: Схема целиком, вместе с промптом полностраничного прохода
+    parameters:
+      - {name: name, in: path, type: string, required: true}
+    responses:
+      200:
+        description: Схема
+      404:
+        description: Схемы с таким именем нет
+        schema: {$ref: "#/definitions/Error"}
+    """
+    sch = schemas.get(name)
+    if sch is None:
+        return _error("схема не найдена", 404)
+    return jsonify({"success": True, "schema": sch,
+                    "prompt": schemas.fullPrompt(sch),
+                    "request_id": logging_setup.getRequestId()})
