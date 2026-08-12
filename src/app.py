@@ -350,3 +350,94 @@ def handleUnexpected(error):
               extra={"path": request.path, "method": request.method,
                      "error": str(error)}, exc_info=True)
     return _error("внутренняя ошибка сервиса", 500)
+
+
+# === РОУТЫ ===
+
+@app.route("/")
+def index():
+    """Веб-интерфейс."""
+    return render_template("index.html", pdf_support=HAS_FITZ)
+
+
+@app.route("/api/health")
+def health():
+    """Живость сервиса
+    ---
+    tags: [Служебные]
+    summary: Жив ли процесс
+    description: >
+      Отвечает `ok`, пока процесс обслуживает запросы. Готовность к
+      распознаванию сюда намеренно не входит: иначе healthcheck Docker
+      перезапускал бы контейнер из-за отсутствующего файла модели.
+      Готовность смотрите в `/api/status`.
+    responses:
+      200:
+        description: Сервис жив
+    """
+    return jsonify({
+        "status": "ok",
+        "message": "сервис работает",
+        "request_id": logging_setup.getRequestId(),
+    })
+
+
+@app.route("/api/config")
+def getConfig():
+    """Текущая конфигурация
+    ---
+    tags: [Служебные]
+    summary: Действующие настройки сервиса
+    description: >
+      Настройки так, как их прочитал сервис, с учётом переменных окружения.
+      Полезно, чтобы убедиться, что контейнер поднялся с тем конфигом,
+      который вы правили.
+    responses:
+      200:
+        description: Конфигурация
+    """
+    return jsonify(config)
+
+
+@app.route("/api/status")
+def status():
+    """Детальный статус сервиса
+    ---
+    tags: [Служебные]
+    summary: Готовность к работе, железо, схемы, словари, история
+    description: >
+      Главная диагностическая ручка. `ready: false` означает, что
+      распознавание вернёт 503 — смотрите `model_exists` и `llama_exists`,
+      чтобы понять, чего не хватает.
+    responses:
+      200:
+        description: Состояние сервиса
+    """
+    return jsonify({
+        "ready": engine.ready(),
+        "model_exists": engine.modelExists(),
+        "model_path": engine.model_path,
+        "mmproj_path": engine.mmproj_path,
+        "llama_exists": engine.llamaExists(),
+        "llama_path": engine.llama_path,
+        "backend": engine.backend,
+        "backend_configured": config["ocr"]["backend"],
+        "pdf_support": HAS_FITZ,
+        "hardware": engine.hardware,
+        "model_name": engine.model_name,
+        "gpu_layers": engine.gpu_layers,
+        "schemas": sorted(schemas.listSchemas()),
+        "dictionaries": {
+            "loaded": dictmatch.dbLoaded(),
+            "version": dictmatch.dictVersion(),
+            "sizes": {k: len(v) for k, v in dictmatch.DB.items()},
+            "errors": list(dictmatch.LOAD_ERRORS),
+        },
+        "storage": storage.stats(),
+        "logs": {
+            "dir": logging_setup.LOG_DIR,
+            "raw_model_output": logging_setup.LOG_RAW,
+            "audit_content": AUDIT_CONTENT,
+        },
+        "request_id": logging_setup.getRequestId(),
+    })
