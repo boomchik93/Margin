@@ -605,3 +605,248 @@ def resultDetail(request_id):
                         "request_id": logging_setup.getRequestId()}), 404
     return jsonify({"success": True, "target_request_id": request_id,
                     "pages": len(items), "results": items})
+
+
+@app.route("/upload", methods=["POST"])
+@app.route("/api/ocr", methods=["POST"])
+def upload():
+    """Распознать файл
+    ---
+    tags: [Распознавание]
+    summary: Загрузить изображение или PDF и получить текст либо поля
+    description: >
+      Основная ручка сервиса. Файл передаётся как `multipart/form-data` в
+      поле `file`.
+
+
+      Без `schema` возвращается расшифровка рукописного текста страницы, со
+      `schema` — поля документа по схеме. Для изображения результат лежит в
+      корне ответа, для PDF — в массиве `results`, по элементу на страницу;
+      различать удобно по полю `type`.
+
+
+      Обработка небыстрая: страница занимает от секунд до десятков секунд в
+      зависимости от железа и числа зон в схеме. Ставьте таймаут клиента с
+      запасом.
+    consumes: [multipart/form-data]
+    parameters:
+      - name: file
+        in: formData
+        type: file
+        required: true
+        description: png, jpg, jpeg, gif, bmp, webp или pdf
+      - name: schema
+        in: formData
+        type: string
+        description: Имя схемы из /api/schemas. Без него — свободный текст
+      - name: schema_json
+        in: formData
+        type: string
+        description: Схема прямо в запросе, JSON в формате docs/SCHEMAS.md
+      - name: language
+        in: formData
+        type: string
+        description: >
+          Язык рукописи для свободного текста: ru, en, auto или название
+          языка. По умолчанию — из настроек
+      - name: printed
+        in: formData
+        type: boolean
+        description: Свободный текст — читать и печатный текст тоже
+      - name: X-Request-ID
+        in: header
+        type: string
+        description: Свой идентификатор запроса
+    responses:
+      200:
+        description: Файл обработан
+        schema:
+          type: object
+          properties:
+            success: {type: boolean}
+            type: {type: string, enum: [image, pdf]}
+            request_id: {type: string}
+            duration_seconds: {type: number}
+            pages: {type: integer, description: "Только для PDF"}
+            results:
+              type: array
+              description: Страницы PDF, только при type=pdf
+              items: {$ref: "#/definitions/PageResult"}
+      400:
+        description: Нет файла, неподдерживаемый формат или неверная схема
+        schema: {$ref: "#/definitions/Error"}
+      413:
+        description: Файл больше допустимого размера
+        schema: {$ref: "#/definitions/Error"}
+      429:
+        description: Превышен лимит запросов в минуту
+        schema: {$ref: "#/definitions/Error"}
+      502:
+        description: Модель не ответила
+        schema: {$ref: "#/definitions/Error"}
+      503:
+        description: Нет файла модели или llama.cpp
+        schema: {$ref: "#/definitions/Error"}
+    """
+    if not checkRateLimit():
+        log.warning("запрос отклонён лимитом", extra={
+            "client_ip": request.remote_addr,
+            "limit_per_minute":
+                config["api"]["rate_limit"]["requests_per_minute"]})
+        return _error("слишком много запросов", 429)
+
+    if "file" not in request.files:
+        return _error("нет файла", 400)
+
+    file = request.files["file"]
+    if file.filename == "":
+        return _error("пустое имя файла", 400)
+
+    if not allowedFile(file.filename):
+        log.warning("формат файла не поддерживается", extra={
+            "source_file": file.filename,
+            "allowed": sorted(ALLOWED_EXTENSIONS)})
+        return _error("неподдерживаемый формат", 400)
+
+    sch, schema_error = resolveSchema()
+    if schema_error:
+        return _error(schema_error, 400)
+
+    if not engine.modelExists():
+        log.error("файл модели не найден, распознавание невозможно",
+                  extra={"model_path": engine.model_path,
+                         "mmproj_path": engine.mmproj_path})
+        return _error("модель не найдена", 503)
+
+    if not engine.llamaExists():
+        log.error("llama.cpp не найден, распознавание невозможно",
+                  extra={"llama_path": engine.llama_path})
+        return _error("llama.cpp не найден", 503)
+
+    extension = file.filename.rsplit(".", 1)[1].lower()
+    if extension == "pdf" and not HAS_FITZ:
+        return _error("pdf не поддерживается: не установлен PyMuPDF", 400)
+
+    language = (request.form.get("language") or request.args.get("language")
+                or "").strip().lower() or None
+    printed = _flag("printed")
+
+    # Имя на диске не зависит от имени клиента: secure_filename вычищает
+    # кириллицу до пустой строки, а расширение уже проверено.
+    os.makedirs(app.config["UPLOAD_FOLDER"], exist_ok=True)
+    safe_name = secure_filename(file.filename) or "upload"
+    file_path = os.path.join(app.config["UPLOAD_FOLDER"],
+                             "%s_%s.%s" % (uuid.uuid4().hex,
+                                           safe_name.rsplit(".", 1)[0][:40],
+                                           extension))
+    file.save(file_path)
+
+    log.info("файл принят", extra={
+        "source_file": file.filename,
+        "size_bytes": os.path.getsize(file_path),
+        "mode": "form" if sch else "text",
+        "schema": sch["name"] if sch else "",
+    })
+
+    started = time.time()
+    request_id = logging_setup.getRequestId()
+    try:
+        if extension == "pdf":
+            images = extractImagesFromPdf(file_path,
+                                          config["ocr"]["pdf_scale"])
+            if not images:
+                return _error("не удалось извлечь страницы", 400)
+
+            entries = []
+            for img in images:
+                page_started = time.time()
+                try:
+                    result = engine.readPage(img["path"], sch,
+                                             language=language,
+                                             printed=printed)
+                finally:
+                    try:
+                        os.remove(img["path"])
+                    except OSError:
+                        pass
+                duration = round(time.time() - page_started, 2)
+                recordPage(result, file.filename, "pdf", img["page"],
+                           len(images), duration)
+                entries.append(pageEntry(result, page=img["page"]))
+
+            total = round(time.time() - started, 2)
+            log.info("PDF обработан", extra={
+                "source_file": file.filename, "pages": len(entries),
+                "seconds": total,
+                "pages_failed": sum(1 for e in entries if e.get("error"))})
+
+            # Модель не ответила ни на одной странице — это отказ сервиса, а
+            # не результат. Частичный успех отдаётся как есть: страницы со
+            # сбоем помечены `error`.
+            if all(e.get("error") for e in entries):
+                return _error("распознавание не удалось", 502)
+            return jsonify({
+                "success": True,
+                "type": "pdf",
+                "pages": len(entries),
+                "results": entries,
+                "request_id": request_id,
+                "duration_seconds": total,
+            })
+
+        result = engine.readPage(file_path, sch, language=language,
+                                 printed=printed)
+        duration = round(time.time() - started, 2)
+        recordPage(result, file.filename, "image", 1, 1, duration)
+        if result.get("error"):
+            return _error("распознавание не удалось", 502)
+
+        payload = {"success": True, "type": "image",
+                   "request_id": request_id, "duration_seconds": duration}
+        payload.update(pageEntry(result))
+        return jsonify(payload)
+
+    finally:
+        try:
+            os.remove(file_path)
+        except OSError as e:
+            log.warning("загруженный файл не удалён",
+                        extra={"path": file_path, "error": str(e)})
+
+
+def main():
+    os.makedirs(app.config["UPLOAD_FOLDER"], exist_ok=True)
+
+    log.info("сервис запускается", extra={
+        "model": engine.model_name,
+        "model_present": engine.modelExists(),
+        "llama_path": engine.llama_path,
+        "llama_present": engine.llamaExists(),
+        "backend": config["ocr"]["backend"],
+        "device": engine.hardware["device"],
+        "gpu_layers": engine.gpu_layers,
+        "pdf_support": HAS_FITZ,
+        "host": config["server"]["host"],
+        "port": config["server"]["port"],
+        "schemas": sorted(schemas.listSchemas()),
+        "dictionaries_dir": dictmatch.DICT_DIR,
+        "log_dir": logging_setup.LOG_DIR,
+        "results_db": storage.DB_PATH,
+    })
+
+    if not engine.modelExists():
+        log.error("файл модели или проектора отсутствует: сервис поднимется, "
+                  "но каждый запрос распознавания вернёт 503",
+                  extra={"model_path": engine.model_path,
+                         "mmproj_path": engine.mmproj_path})
+    if not engine.llamaExists():
+        log.error("llama.cpp отсутствует: сервис поднимется, но каждый "
+                  "запрос распознавания вернёт 503",
+                  extra={"llama_path": engine.llama_path})
+
+    app.run(host=config["server"]["host"], port=config["server"]["port"],
+            debug=config["server"]["debug"])
+
+
+if __name__ == "__main__":
+    main()
