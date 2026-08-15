@@ -487,3 +487,49 @@ def schemaDetail(name):
     return jsonify({"success": True, "schema": sch,
                     "prompt": schemas.fullPrompt(sch),
                     "request_id": logging_setup.getRequestId()})
+
+
+@app.route("/api/dictionaries")
+def dictionaries():
+    """Состояние словарей
+    ---
+    tags: [Словари]
+    summary: Куда смотрит сервис и что там нашёл
+    description: >
+      Отвечает на вопрос «я положил файл в директорию, он подхватился?».
+      Показывает путь, версию, число значений по каждому словарю и ошибки
+      разбора файлов.
+    responses:
+      200:
+        description: Состояние словарей
+    """
+    return jsonify(dictmatch.status())
+
+
+@app.route("/api/dictionaries/reload", methods=["POST"])
+def reloadDictionaries():
+    """Перечитать словари с диска
+    ---
+    tags: [Словари]
+    summary: Подхватить изменения без перезапуска
+    description: >
+      Рестарт сервиса стоит времени: модель заново раскладывается по
+      видеопамяти. Перезагрузка словарей занимает доли секунды и не трогает
+      ни модель, ни текущие соединения. Обычно не нужна: сервис сам замечает
+      изменение файлов перед следующей страницей.
+    responses:
+      200:
+        description: Словари перечитаны
+      500:
+        description: Не удалось перечитать, работают старые данные
+        schema: {$ref: "#/definitions/Error"}
+    """
+    try:
+        state = dictmatch.reload()
+    except Exception as e:
+        log.error("перезагрузка словарей не удалась",
+                  extra={"error": str(e)}, exc_info=True)
+        return _error("не удалось перезагрузить словари", 500)
+
+    return jsonify({"success": True, "dictionaries": state,
+                    "request_id": logging_setup.getRequestId()})
