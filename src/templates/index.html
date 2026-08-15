@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Распознавание рукописного текста</title>
+<style>
+  :root {
+    --bg: #f4f5f7;
+    --card: #ffffff;
+    --line: #d9dce1;
+    --text: #1c1f24;
+    --muted: #6b7280;
+    --accent: #2563eb;
+    --ok: #15803d;
+    --ok-bg: #eaf7ee;
+    --warn: #a16207;
+    --warn-bg: #fdf6e3;
+    --bad: #b91c1c;
+    --bad-bg: #fdeceb;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px;
+    font: 15px/1.5 -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+    background: var(--bg); color: var(--text);
+  }
+  .wrap { max-width: 1100px; margin: 0 auto; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 20px; font-size: 14px; }
+  .card {
+    background: var(--card); border: 1px solid var(--line);
+    border-radius: 10px; padding: 20px; margin-bottom: 16px;
+  }
+  .drop {
+    display: block;
+    border: 2px dashed var(--line); border-radius: 10px;
+    padding: 36px 20px; text-align: center; cursor: pointer;
+    background: #fafbfc; transition: .15s;
+  }
+  .drop:hover, .drop.over { border-color: var(--accent); background: #f0f6ff; }
+  .drop input { display: none; }
+  .drop b { display: block; font-size: 16px; margin-bottom: 4px; }
+  .drop span { color: var(--muted); font-size: 13px; }
+  .row { display: flex; gap: 10px; align-items: center; margin-top: 14px; flex-wrap: wrap; }
+  button {
+    background: var(--accent); color: #fff; border: 0; border-radius: 6px;
+    padding: 10px 18px; font-size: 15px; cursor: pointer;
+  }
+  button:disabled { background: #9aa6b8; cursor: default; }
+  button.ghost { background: #fff; color: var(--text); border: 1px solid var(--line); }
+  select {
+    font: inherit; padding: 9px 10px; border: 1px solid var(--line);
+    border-radius: 6px; background: #fff; max-width: 100%;
+  }
+  label.check { font-size: 14px; color: var(--muted); display: flex; gap: 6px; align-items: center; }
+  .fname { color: var(--muted); font-size: 14px; }
+
+  .bar { height: 4px; background: #e6e8ec; border-radius: 3px; overflow: hidden; margin-top: 14px; display: none; }
+  .bar.on { display: block; }
+  .bar i { display: block; height: 100%; width: 40%; background: var(--accent); animation: slide 1.1s infinite ease-in-out; }
+  @keyframes slide { 0% { margin-left: -40%; } 100% { margin-left: 100%; } }
+
+  .stats { display: flex; gap: 20px; flex-wrap: wrap; margin-bottom: 14px; }
+  .stat b { display: block; font-size: 20px; }
+  .stat span { color: var(--muted); font-size: 13px; }
+
+  .tablewrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { padding: 8px 10px; text-align: left; border-bottom: 1px solid #eceef1; vertical-align: top; }
+  th { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); font-weight: 600; }
+  td.val { font-weight: 500; word-break: break-word; }
+  td.empty { color: #9aa3ad; font-weight: 400; }
+  tr.review td { background: var(--bad-bg); }
+
+  .pill {
+    display: inline-block; padding: 2px 9px; border-radius: 20px;
+    font-size: 12px; font-weight: 600; white-space: nowrap;
+  }
+  .pill.ok { background: var(--ok-bg); color: var(--ok); }
+  .pill.warn { background: var(--warn-bg); color: var(--warn); }
+  .pill.bad { background: var(--bad-bg); color: var(--bad); }
+  .pill.none { background: #eef0f3; color: var(--muted); }
+  .why { color: var(--muted); font-size: 12px; }
+
+  .note {
+    background: var(--warn-bg); border: 1px solid #f0e0b0; color: #6b5310;
+    border-radius: 8px; padding: 10px 14px; margin-bottom: 14px; font-size: 14px;
+  }
+  .err { background: var(--bad-bg); border: 1px solid #f3c6c2; color: var(--bad); }
+  details { margin-top: 14px; }
+  summary { cursor: pointer; color: var(--muted); font-size: 14px; }
+  pre {
+    background: #1c1f24; color: #e6e8ec; padding: 14px; border-radius: 8px;
+    overflow-x: auto; font-size: 13px; margin: 10px 0 0;
+  }
+  .text {
+    white-space: pre-wrap; word-break: break-word; font-size: 16px;
+    line-height: 1.6; margin: 0; padding: 14px; border-radius: 8px;
+    background: #fafbfc; border: 1px solid var(--line);
+  }
+  .text mark { background: var(--bad-bg); color: var(--bad); padding: 0 2px; border-radius: 3px; }
+  .page-head { font-size: 15px; font-weight: 600; margin: 0 0 12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Распознавание рукописного текста</h1>
+  <p class="sub">Загрузите скан, фото или PDF. Без схемы сервис расшифрует весь рукописный текст страницы, со схемой — извлечёт поля документа с оценкой уверенности по каждому.</p>
+
+  <div class="card">
+    <label class="drop" id="drop">
+      <input type="file" id="file" accept=".png,.jpg,.jpeg,.gif,.bmp,.webp{% if pdf_support %},.pdf{% endif %}">
+      <b>Перетащите файл или нажмите для выбора</b>
+      <span>PNG, JPG, BMP, WEBP{% if pdf_support %}, PDF{% endif %}</span>
+    </label>
+    <div class="row">
+      <select id="schema" aria-label="Режим распознавания">
+        <option value="">Свободный текст</option>
+      </select>
+      <label class="check" id="printedWrap">
+        <input type="checkbox" id="printed"> читать и печатный текст
+      </label>
+    </div>
+    <div class="row">
+      <button id="go" disabled>Распознать</button>
+      <button id="clr" class="ghost" style="display:none">Очистить</button>
+      <span class="fname" id="fname"></span>
+    </div>
+    <div class="bar" id="bar"><i></i></div>
+  </div>
+
+  <div id="out"></div>
+</div>
+
+<script>
+// Расшифровка причин оценки — те же коды, что пишет модуль confidence.
+const REASONS = {
+  format_ok: "формат верный",
+  format_bad: "формат нарушен",
+  unverified: "проверить нечем",
+  mark: "отметка различима",
+  unclear: "отметку не разглядеть",
+  empty: "пусто"
+};
+const DICT = {
+  exact: "есть в словаре",
+  fixed: "исправлено по словарю",
+  review: "нет в словаре",
+  no_dictionary: "словарь не найден"
+};
+const MARKS = { checked: "отмечено", unchecked: "не отмечено", unclear: "не разглядеть" };
+
+// Порог ручной проверки. Совпадает с REVIEW_THRESHOLD в модуле confidence.
+const REVIEW = 50;
+
+const $ = id => document.getElementById(id);
+const drop = $("drop"), file = $("file"), go = $("go"), clr = $("clr");
+const bar = $("bar"), out = $("out"), fname = $("fname");
+const schemaSel = $("schema"), printed = $("printed");
+
+// Схемы: имя -> описание. Подписи полей в таблице берутся отсюда.
+const SCHEMAS = {};
+
+fetch("/api/schemas").then(r => r.json()).then(j => {
+  for (const s of j.schemas || []) {
+    SCHEMAS[s.name] = s;
+    const o = document.createElement("option");
+    o.value = s.name;
+    o.textContent = "Поля по схеме: " + (s.title || s.name);
+    schemaSel.appendChild(o);
+  }
+}).catch(() => {});
+
+schemaSel.onchange = () => {
+  $("printedWrap").style.display = schemaSel.value ? "none" : "";
+};
+
+file.onchange = () => pick(file.files[0]);
+["dragenter", "dragover"].forEach(e =>
+  drop.addEventListener(e, ev => { ev.preventDefault(); drop.classList.add("over"); }));
+["dragleave", "drop"].forEach(e =>
+  drop.addEventListener(e, ev => { ev.preventDefault(); drop.classList.remove("over"); }));
+drop.addEventListener("drop", ev => {
+  const f = ev.dataTransfer.files[0];
+  if (f) { file.files = ev.dataTransfer.files; pick(f); }
+});
+
+function pick(f) {
+  if (!f) return;
+  fname.textContent = f.name + " · " + (f.size / 1048576).toFixed(1) + " МБ";
+  go.disabled = false;
+  clr.style.display = "";
+}
+
+clr.onclick = () => {
+  file.value = ""; fname.textContent = ""; out.innerHTML = "";
+  go.disabled = true; clr.style.display = "none";
+};
+
+go.onclick = async () => {
+  const f = file.files[0];
+  if (!f) return;
+  go.disabled = true; bar.classList.add("on"); out.innerHTML = "";
+  const fd = new FormData();
+  fd.append("file", f);
+  if (schemaSel.value) fd.append("schema", schemaSel.value);
+  else if (printed.checked) fd.append("printed", "1");
+  try {
+    const r = await fetch("/api/ocr", { method: "POST", body: fd });
+    const j = await r.json();
+    if (!j.success) {
+      out.innerHTML = card(`<div class="note err">${esc(j.error || "ошибка распознавания")}` +
+        (j.request_id ? ` · запрос ${esc(j.request_id)}` : "") + `</div>`);
+    } else if (j.type === "pdf") {
+      out.innerHTML = j.results.map((p, i) =>
+        render(p, `Страница ${p.page || i + 1} из ${j.pages}`)).join("");
+    } else {
+      out.innerHTML = render(j, null);
+    }
+  } catch (e) {
+    out.innerHTML = card(`<div class="note err">Сеть или сервер недоступны: ${esc(e.message)}</div>`);
+  } finally {
+    bar.classList.remove("on"); go.disabled = false;
+  }
+};
+
+function card(inner) { return `<div class="card">${inner}</div>`; }
+function esc(s) {
+  return String(s == null ? "" : s).replace(/[&<>"]/g,
+    c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
+
+function pill(c) {
+  if (!c) return '<span class="pill none">—</span>';
+  const cls = c >= 70 ? "ok" : (c >= REVIEW ? "warn" : "bad");
+  return `<span class="pill ${cls}">${c}%</span>`;
+}
+
+function render(res, heading) {
+  const head = heading ? `<p class="page-head">${esc(heading)}</p>` : "";
+  if (res.error) {
+    return card(head + `<div class="note err">Страница не прочитана: модель не ответила.</div>`);
+  }
+  return res.mode === "form" ? renderForm(res, head) : renderText(res, head);
+}
+
+function renderText(res, head) {
+  const lines = res.lines || [];
+  let html = head + `<div class="stats">
+    <div class="stat"><b>${lines.length}</b><span>строк</span></div>
+    <div class="stat"><b>${res.unclear_count || 0}</b><span>неразборчивых слов</span></div>
+  </div>`;
+  if (!res.parsed) {
+    html += `<div class="note">Ответ модели не разобран как JSON, показан как есть.</div>`;
+  }
+  if (!lines.length) {
+    html += `<div class="note">Рукописный текст на странице не найден.</div>`;
+    return card(html);
+  }
+  // Знак [?] подсвечивается: это слова, которые модель не смогла прочитать.
+  const body = esc(res.text || "").replace(/\[\?\]/g, "<mark>[?]</mark>");
+  html += `<p class="text">${body}</p>`;
+  html += `<details><summary>JSON</summary><pre>${esc(JSON.stringify(
+    { text: res.text, lines: res.lines }, null, 2))}</pre></details>`;
+  return card(html);
+}
+
+function renderForm(res, head) {
+  const schema = SCHEMAS[res.schema] || { fields: [] };
+  const labels = {};
+  for (const f of schema.fields || []) labels[f.key] = f.label;
+
+  const fields = res.fields || {};
+  const conf = res.confidence || {};
+  const reasons = res.confidence_reason || {};
+  const dict = res.dict_status || {};
+  const cands = res.candidates || {};
+  const review = new Set(res.needs_review || []);
+
+  // Средняя уверенность считается по заполненным полям: у пустых оценка 0
+  // означает «нечего оценивать».
+  const scored = Object.values(conf).filter(x => x > 0);
+  const mean = scored.length
+    ? Math.round(scored.reduce((a, b) => a + b, 0) / scored.length) : 0;
+
+  let html = head + `<div class="stats">
+    <div class="stat"><b>${mean}%</b><span>средняя уверенность</span></div>
+    <div class="stat"><b>${scored.length}</b><span>заполнено полей</span></div>
+    <div class="stat"><b>${review.size}</b><span>требуют проверки</span></div>
+  </div>`;
+  if (!res.parsed) {
+    html += `<div class="note">Ответ модели не разобран как JSON — поля пусты.</div>`;
+  }
+  if (review.size) {
+    html += `<div class="note">Проверьте вручную: ${esc(
+      [...review].map(k => labels[k] || k).join(", "))}.</div>`;
+  }
+
+  let rows = "";
+  for (const key of Object.keys(fields)) {
+    let value = fields[key];
+    if (MARKS[value] && reasons[key] && (reasons[key] === "mark" || reasons[key] === "unclear")) {
+      value = MARKS[value];
+    }
+    const empty = value === "" || value == null;
+    let why = REASONS[reasons[key]] || reasons[key] || "";
+    if (dict[key] && DICT[dict[key]]) why += (why ? " · " : "") + DICT[dict[key]];
+    if (cands[key] && cands[key].length) {
+      why += " · похожие: " + cands[key].map(c => c.value).join(", ");
+    }
+    rows += `<tr${review.has(key) ? ' class="review"' : ""}>
+      <td>${esc(labels[key] || key)}</td>
+      <td class="val${empty ? " empty" : ""}">${empty ? "—" : esc(value)}</td>
+      <td>${pill(conf[key] || 0)}</td>
+      <td class="why">${esc(why)}</td>
+    </tr>`;
+  }
+  html += `<div class="tablewrap"><table><thead><tr>
+    <th>Поле</th><th>Значение</th><th>Уверенность</th><th>Основание</th>
+  </tr></thead><tbody>${rows}</tbody></table></div>`;
+  html += `<details><summary>JSON</summary>
+    <pre>${esc(JSON.stringify(fields, null, 2))}</pre></details>`;
+  return card(html);
+}
+</script>
+</body>
+</html>
