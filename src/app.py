@@ -533,3 +533,75 @@ def reloadDictionaries():
 
     return jsonify({"success": True, "dictionaries": state,
                     "request_id": logging_setup.getRequestId()})
+
+
+@app.route("/api/results")
+def results():
+    """История распознаваний
+    ---
+    tags: [История]
+    summary: Список сохранённых результатов, новые первыми
+    description: Фильтры складываются по И.
+    parameters:
+      - {name: limit, in: query, type: integer, default: 50, maximum: 500}
+      - {name: offset, in: query, type: integer, default: 0}
+      - {name: date_from, in: query, type: string, format: date,
+         description: "Нижняя граница даты, ГГГГ-ММ-ДД"}
+      - {name: date_to, in: query, type: string, format: date,
+         description: "Верхняя граница даты, ГГГГ-ММ-ДД"}
+      - {name: q, in: query, type: string,
+         description: Подстрока в распознанном тексте или значениях полей}
+      - {name: schema, in: query, type: string,
+         description: Только результаты по этой схеме}
+      - {name: status, in: query, type: string, enum: [ok, error]}
+      - {name: needs_review, in: query, type: string, enum: ["1", "true", "yes"],
+         description: Только записи, требующие ручной проверки}
+    responses:
+      200:
+        description: Страница истории
+      400:
+        description: limit или offset не число
+        schema: {$ref: "#/definitions/Error"}
+    """
+    try:
+        limit = max(1, min(int(request.args.get("limit", 50)), 500))
+        offset = max(int(request.args.get("offset", 0)), 0)
+    except ValueError:
+        return _error("limit и offset должны быть числами", 400)
+
+    data = storage.listResults(
+        limit=limit,
+        offset=offset,
+        date_from=request.args.get("date_from"),
+        date_to=request.args.get("date_to"),
+        query=request.args.get("q"),
+        schema_name=request.args.get("schema"),
+        status=request.args.get("status"),
+        needs_review_only=request.args.get("needs_review") in ("1", "true", "yes"),
+    )
+    return jsonify({"success": "error" not in data, "limit": limit,
+                    "offset": offset, **data})
+
+
+@app.route("/api/results/<request_id>")
+def resultDetail(request_id):
+    """Одна запись истории
+    ---
+    tags: [История]
+    summary: Все страницы одного запроса с трассировкой стадий
+    parameters:
+      - {name: request_id, in: path, type: string, required: true}
+    responses:
+      200:
+        description: Запись найдена
+      404:
+        description: Записи с таким request_id нет
+        schema: {$ref: "#/definitions/Error"}
+    """
+    items = storage.getByRequest(request_id)
+    if not items:
+        return jsonify({"success": False, "error": "запись не найдена",
+                        "target_request_id": request_id,
+                        "request_id": logging_setup.getRequestId()}), 404
+    return jsonify({"success": True, "target_request_id": request_id,
+                    "pages": len(items), "results": items})
