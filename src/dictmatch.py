@@ -328,13 +328,18 @@ def nearestCandidates(name, value, limit=2):
     if not raw or not candidates:
         return []
     key = norm(raw)
+    # Дальше трети длины значения это уже не «похожее», а другое слово:
+    # показывать его кандидатом значило бы подталкивать к неверной правке.
+    cap = max(2.0, len(key) / 3.0)
     scored = []
     for c in candidates:
         nk = norm(c)
-        # грубая отсечка по длине, чтобы не считать расстояние до всего словаря
-        if abs(len(nk) - len(key)) > max(3, len(key) // 2):
+        # длина отличается больше предела — считать расстояние незачем
+        if abs(len(nk) - len(key)) > cap:
             continue
-        scored.append((confusableDist(key, nk), c))
+        d = confusableDist(key, nk)
+        if d <= cap:
+            scored.append((d, c))
     scored.sort(key=lambda item: (item[0], item[1]))
     return [{"value": c, "distance": round(d, 2)} for d, c in scored[:limit]]
 
