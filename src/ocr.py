@@ -723,6 +723,11 @@ def recognizeText(read, image_path, config, language=None, printed=False):
                 log.debug("вероятности чтения не разобраны",
                           extra={"error": str(e)})
 
+        if not raw:
+            # Пустой ответ модели — это отказ, а не пустая страница: без
+            # пометки они неразличимы.
+            result["error"] = "model_no_response"
+
         timings["total"] = round(time.time() - started, 2)
         result["timings"] = timings
         log.info("расшифровка завершена", extra={
@@ -872,8 +877,12 @@ def recognizeForm(read, image_path, sch, config):
         log.info("чтение полей завершено", extra={
             "image": os.path.basename(image_path), "schema": sch["name"],
             "timings": timings})
-        return result, {"parsed": base is not None, "timings": timings,
-                        "votes": votes, "logprobs": measured}
+        meta = {"parsed": base is not None, "timings": timings,
+                "votes": votes, "logprobs": measured}
+        if not raw:
+            # Пустой ответ модели — это отказ, а не незаполненный документ.
+            meta["error"] = "model_no_response"
+        return result, meta
     finally:
         _removeFiles(temp_files)
 
@@ -929,6 +938,8 @@ def postprocessForm(sch, recognized, meta=None):
         "dict_version": dictmatch.dictVersion(),
         "timings": meta.get("timings") or {},
     }
+    if meta.get("error"):
+        result["error"] = meta["error"]
     measured = meta.get("logprobs") or {}
     if measured:
         result["logprob_min"] = {k: v[0] for k, v in measured.items()
