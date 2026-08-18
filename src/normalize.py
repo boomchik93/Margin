@@ -30,7 +30,15 @@ def fixHomoglyphs(text):
     if not s or not _CYRILLIC.search(s):
         return s
 
-    return "".join(HOMOGLYPHS.get(ch, ch) for ch in s)
+    def fix(match):
+        word = match.group(0)
+        if not _CYRILLIC.search(word):
+            return word
+        return "".join(HOMOGLYPHS.get(ch, ch) for ch in word)
+
+    # По словам, а не по строке целиком: в "ул. Мира, корпус B2" латинская
+    # буква корпуса стоит отдельным словом, и трогать её нельзя.
+    return re.sub(r"[^\W\d_]+", fix, s)
 
 
 def _text(field, value, language):
