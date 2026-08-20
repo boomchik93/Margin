@@ -279,7 +279,10 @@ def stats():
             total = conn.execute("SELECT COUNT(*) FROM recognitions").fetchone()[0]
             day = conn.execute(
                 "SELECT COUNT(*) FROM recognitions "
-                "WHERE created_at >= datetime('now', '-1 day')").fetchone()[0]
+                # created_at пишется местным временем с "T" между датой и
+                # временем — сравниваем с меткой того же вида.
+                "WHERE created_at >= strftime('%Y-%m-%dT%H:%M:%S', 'now', "
+                "'localtime', '-1 day')").fetchone()[0]
             review = conn.execute(
                 "SELECT COUNT(*) FROM recognitions WHERE review_count > 0").fetchone()[0]
             failed = conn.execute(
