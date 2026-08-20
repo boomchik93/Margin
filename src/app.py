@@ -41,6 +41,9 @@ app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = config["server"]["max_content_length"]
 app.config["UPLOAD_FOLDER"] = config["paths"]["upload_folder"]
 app.json.ensure_ascii = False
+# Порядок ключей сохраняется: поля идут в том порядке, в каком описаны в
+# схеме, а не по алфавиту.
+app.json.sort_keys = False
 
 if config["api"]["enable_cors"]:
     CORS(app)
