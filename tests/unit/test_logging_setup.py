@@ -169,3 +169,73 @@ class AuditTest(unittest.TestCase):
         with open(os.path.join(self.tmp.name, "app.log"), encoding="utf-8") as fh:
             app_log = fh.read()
         self.assertNotIn('"page": 1', app_log)
+
+
+class UnwritableLogDirTest(unittest.TestCase):
+    """Недоступная директория логов не должна ронять сервис."""
+
+    def test_сервисПродолжаетРаботуБезФайловыхЛогов(self):
+        for name in list(sys.modules):
+            if name == "logging_setup":
+                del sys.modules[name]
+        os.environ["LOG_DIR"] = "/proc/nonexistent/logs" if os.path.isdir("/proc") \
+            else "/dev/null/logs"
+        import logging_setup
+
+        try:
+            log = logging_setup.setup(force=True)
+            # Ключевое: вызов не бросает и логгер остаётся рабочим.
+            log.info("сервис жив")
+        finally:
+            _closeHandlers()
+            os.environ.pop("LOG_DIR", None)
+
+
+class StageTest(unittest.TestCase):
+    """Замер стадии: время пишется и при успехе, и при сбое."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        for name in list(sys.modules):
+            if name == "logging_setup":
+                del sys.modules[name]
+        os.environ["LOG_DIR"] = self.tmp.name
+        import logging_setup
+        self.ls = logging_setup
+        self.ls.LOG_DIR = self.tmp.name
+        self.ls.setup(force=True)
+
+    def tearDown(self):
+        _closeHandlers()
+        self.tmp.cleanup()
+        os.environ.pop("LOG_DIR", None)
+
+    def _lines(self):
+        with open(os.path.join(self.tmp.name, "app.log"), encoding="utf-8") as fh:
+            return [json.loads(line) for line in fh if line.strip()]
+
+    def test_успешнаяСтадияПишетВремя(self):
+        log = self.ls.getLogger("test")
+        with self.ls.stage(log, "preprocess", image="a.png") as st:
+            st.add(rectified=True)
+
+        entry = self._lines()[-1]
+        self.assertEqual(entry["stage"], "preprocess")
+        self.assertTrue(entry["rectified"])
+        self.assertIsInstance(entry["seconds"], float)
+
+    def test_сбойнаяСтадияЛогируетсяИИсключениеПробрасывается(self):
+        """Решение падать или продолжать принимает вызывающий, а не логгер."""
+        log = self.ls.getLogger("test")
+        with self.assertRaises(RuntimeError):
+            with self.ls.stage(log, "llama"):
+                raise RuntimeError("модель не ответила")
+
+        entry = self._lines()[-1]
+        self.assertEqual(entry["level"], "ERROR")
+        self.assertEqual(entry["stage"], "llama")
+        self.assertEqual(entry["error_type"], "RuntimeError")
+
+
+if __name__ == "__main__":
+    unittest.main()
