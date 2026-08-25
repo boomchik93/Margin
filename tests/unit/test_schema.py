@@ -109,3 +109,87 @@ class ZoneValidateTest(unittest.TestCase):
     def test_голосованиеНеДляОтметок(self):
         sch, errors = schemas.validate(self.raw(fields=["agree"], vote=True))
         self.assertIsNone(sch)
+
+
+class ResultTest(unittest.TestCase):
+    def setUp(self):
+        self.sch, _ = schemas.validate(valid())
+
+    def test_пустойРезультатСодержитВсеКлючи(self):
+        empty = schemas.emptyResult(self.sch)
+        self.assertEqual(set(empty), {f["key"] for f in self.sch["fields"]})
+        self.assertEqual(empty["title"], "")
+        # Пока документ не прочитан, «отметки нет» утверждать не на чем.
+        self.assertEqual(empty["agree"], schemas.UNCLEAR)
+
+    def test_приведениеДобавляетОтсутствующиеИВыбрасываетЛишние(self):
+        out = schemas.enforce(self.sch, {"title": " Отчёт ", "extra": "x"})
+        self.assertEqual(out["title"], "Отчёт")
+        self.assertNotIn("extra", out)
+        self.assertEqual(out["city"], "")
+
+    def test_мусорВместоОтветаДаётПустуюСхему(self):
+        for junk in (None, "текст", [1, 2], 5):
+            self.assertEqual(schemas.enforce(self.sch, junk),
+                             schemas.emptyResult(self.sch))
+
+    def test_вложеннаяСтруктураВместоЗначенияНеПопадаетВПоле(self):
+        out = schemas.enforce(self.sch, {"title": {"a": 1}, "amount": 12})
+        self.assertEqual(out["title"], "")
+        self.assertEqual(out["amount"], "12")
+
+    def test_отметкаПриводитсяКТройкеЗначений(self):
+        cases = {True: "checked", False: "unchecked", "да": "checked",
+                 "нет": "unchecked", "V": "checked", None: "unclear",
+                 "кажется": "unclear", "UNCHECKED": "unchecked"}
+        for raw, expected in cases.items():
+            self.assertEqual(schemas.toCheckbox(raw), expected, raw)
+
+
+class PromptTest(unittest.TestCase):
+    def setUp(self):
+        raw = valid()
+        raw["zones"] = [
+            {"name": "top", "box": [0, 0, 1, 0.3], "fields": ["title", "city"]},
+            {"name": "phone", "box": [0, 0.3, 1, 0.4], "fields": ["phone"],
+             "vote": True},
+        ]
+        self.sch, errors = schemas.validate(raw)
+        self.assertEqual(errors, [])
+
+    def test_полныйПромптНазываетВсеПоля(self):
+        prompt = schemas.fullPrompt(self.sch)
+        for field in self.sch["fields"]:
+            self.assertIn('"%s"' % field["key"], prompt)
+            self.assertIn(field["label"], prompt)
+
+    def test_образецОтветаРазбираетсяКакJsonСПустымиЗначениями(self):
+        """Образец пустой намеренно: заполненный пример модель переписывает
+        в пустое поле как прочитанное значение."""
+        prompt = schemas.fullPrompt(self.sch)
+        sample = json.loads(prompt.strip().splitlines()[-1])
+        self.assertEqual(set(sample), {f["key"] for f in self.sch["fields"]})
+        self.assertEqual(sample["title"], "")
+        self.assertEqual(sample["phone"], "")
+
+    def test_правилоПроЯзыкЗависитОтСхемы(self):
+        self.assertIn("кириллицей", schemas.fullPrompt(self.sch))
+        raw = valid()
+        raw["language"] = "en"
+        sch, _ = schemas.validate(raw)
+        self.assertIn("латиницей", schemas.fullPrompt(sch))
+
+    def test_зонныйПромптТолькоПроСвоиПоля(self):
+        prompts = schemas.zonePrompts(self.sch, self.sch["zones"][0])
+        self.assertEqual(len(prompts), 1)
+        self.assertIn('"title"', prompts[0])
+        self.assertNotIn('"phone"', prompts[0])
+
+    def test_голосованиеДаётРазныеФормулировки(self):
+        """При температуре 0 повтор одного промпта даёт тот же ответ:
+        независимые прочтения получаются только сменой формулировки."""
+        prompts = schemas.zonePrompts(self.sch, self.sch["zones"][1])
+        self.assertEqual(len(prompts), schemas.VOTE_PASSES)
+        self.assertEqual(len(set(prompts)), len(prompts))
+        for p in prompts:
+            self.assertIn('{"phone": ""}', p)
