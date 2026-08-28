@@ -193,3 +193,59 @@ class PromptTest(unittest.TestCase):
         self.assertEqual(len(set(prompts)), len(prompts))
         for p in prompts:
             self.assertIn('{"phone": ""}', p)
+
+
+class LoadTest(unittest.TestCase):
+    """Схемы из директории: битый файл виден и не мешает остальным."""
+
+    def setUp(self):
+        self.dir = support.tmpDir()
+        self.saved = schemas.SCHEMA_DIR
+        schemas.SCHEMA_DIR = self.dir
+
+    def tearDown(self):
+        schemas.SCHEMA_DIR = self.saved
+        schemas.reload()
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def write(self, name, payload):
+        with open(os.path.join(self.dir, name), "w", encoding="utf-8") as f:
+            f.write(payload if isinstance(payload, str)
+                    else json.dumps(payload, ensure_ascii=False))
+
+    def test_имяФайлаСтановитсяИменемСхемы(self):
+        self.write("letter.json", valid())
+        schemas.reload()
+        self.assertIsNotNone(schemas.get("letter"))
+        self.assertIsNone(schemas.get("other"))
+
+    def test_битыйФайлНеМешаетОстальным(self):
+        self.write("good.json", valid())
+        self.write("broken.json", "{ не json")
+        self.write("wrong.json", {"fields": [{"key": "a", "type": "nope"}]})
+        schemas.reload()
+        self.assertEqual(sorted(schemas.listSchemas()), ["good"])
+        self.assertEqual(sorted(schemas.loadErrors()),
+                         ["broken.json", "wrong.json"])
+
+    def test_новыйФайлПодхватываетсяБезПерезапуска(self):
+        schemas.reload()
+        self.assertIsNone(schemas.get("later"))
+        self.write("later.json", valid())
+        self.assertIsNotNone(schemas.get("later"))
+
+
+class ShippedSchemaTest(unittest.TestCase):
+    """Схема-пример из config/schemas обязана проходить проверку."""
+
+    def test_примерЗагружается(self):
+        path = os.path.join(support.ROOT, "config", "schemas",
+                            "example_form.json")
+        with open(path, encoding="utf-8") as f:
+            sch, errors = schemas.validate(json.load(f), name="example_form")
+        self.assertEqual(errors, [])
+        self.assertTrue(sch["fields"])
+
+
+if __name__ == "__main__":
+    unittest.main()
