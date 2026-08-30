@@ -61,3 +61,54 @@ class PhoneTest(unittest.TestCase):
     def test_цифрыНеДописываются(self):
         self.assertEqual(normalize.normalizeField(field("phone"), "123-45"),
                          "12345")
+
+
+class TextTest(unittest.TestCase):
+    def test_пробелыСхлопываются(self):
+        self.assertEqual(
+            normalize.normalizeField(field("text"), "  два   слова \n"),
+            "два слова")
+
+    def test_регистрПоНастройкеПоля(self):
+        self.assertEqual(
+            normalize.normalizeField(field("text", case="upper"), "Отчёт"),
+            "ОТЧЁТ")
+        self.assertEqual(
+            normalize.normalizeField(field("text", case="lower"), "Отчёт"),
+            "отчёт")
+        self.assertEqual(
+            normalize.normalizeField(field("text"), "Отчёт"), "Отчёт")
+
+    def test_латинскаяБукваВРусскомСловеЗаменяется(self):
+        # первая буква — латинская P
+        self.assertEqual(normalize.fixHomoglyphs("PОМАШКА"), "РОМАШКА")
+
+    def test_латинскоеСловоЦеликомНеТрогается(self):
+        """Корпус «B2» или код «AC-15» — отдельные латинские слова, и
+        переводить их в кириллицу значило бы испортить значение."""
+        self.assertEqual(normalize.fixHomoglyphs("корпус B2"), "корпус B2")
+        self.assertEqual(normalize.fixHomoglyphs("ACME"), "ACME")
+
+    def test_дляНерусскогоЯзыкаГомоглифыНеСнимаются(self):
+        self.assertEqual(
+            normalize.normalizeField(field("text"), "PОМАШКА", language="en"),
+            "PОМАШКА")
+
+
+class ResultTest(unittest.TestCase):
+    def test_нормализуютсяВсеПоляСхемы(self):
+        sch, errors = schemas.validate(support.SAMPLE_SCHEMA)
+        self.assertEqual(errors, [])
+        out = normalize.normalizeResult(sch, {
+            "title": " годовой  отчёт", "amount": "1 250", "issued": "1/2/24",
+            "phone": "8 900 123-45-67", "agree": True})
+        self.assertEqual(out["title"], "ГОДОВОЙ ОТЧЁТ")
+        self.assertEqual(out["amount"], "1250")
+        self.assertEqual(out["issued"], "01.02.2024")
+        self.assertEqual(out["phone"], "89001234567")
+        self.assertEqual(out["agree"], "checked")
+        self.assertEqual(out["city"], "")
+
+
+if __name__ == "__main__":
+    unittest.main()
