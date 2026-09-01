@@ -62,3 +62,90 @@ class SaveTest(StorageTestCase):
 
     def test_несуществующийЗапросДаётПустойСписок(self):
         self.assertEqual(storage.getByRequest("нет"), [])
+
+
+class ListTest(StorageTestCase):
+    def setUp(self):
+        super().setUp()
+        storage.save(self.record(request_id="a", created_at="2026-01-10T10:00:00"))
+        storage.save(self.record(
+            request_id="b", created_at="2026-02-10T10:00:00", mode="text",
+            schema_name="", fields={}, confidence={},
+            text="Купить хлеб и молоко", needs_review=["text"]))
+        storage.save(self.record(
+            request_id="c", created_at="2026-03-10T10:00:00",
+            status="error", error="recognition_failed"))
+
+    def ids(self, **filters):
+        return [i["request_id"] for i in storage.listResults(**filters)["items"]]
+
+    def test_новыеПервыми(self):
+        self.assertEqual(self.ids(), ["c", "b", "a"])
+
+    def test_границыДатВключительны(self):
+        self.assertEqual(self.ids(date_from="2026-02-10",
+                                  date_to="2026-02-10"), ["b"])
+
+    def test_поискПоТекстуИПоЗначениямПолей(self):
+        self.assertEqual(self.ids(query="хлеб"), ["b"])
+        self.assertEqual(self.ids(query="Казань"), ["c", "a"])
+
+    def test_фильтрПоСхемеИСтатусу(self):
+        self.assertEqual(self.ids(schema_name="sample"), ["c", "a"])
+        self.assertEqual(self.ids(status="error"), ["c"])
+
+    def test_толькоТребующиеПроверки(self):
+        self.assertEqual(self.ids(needs_review_only=True), ["b"])
+
+    def test_постраничнаяВыдачаСчитаетВсе(self):
+        page = storage.listResults(limit=2, offset=0)
+        self.assertEqual(page["total"], 3)
+        self.assertEqual(len(page["items"]), 2)
+
+    def test_списокОтдаётНачалоТекстаАНеВесьТекст(self):
+        storage.save(self.record(request_id="d", mode="text", text="я" * 5000))
+        item = storage.listResults(limit=1)["items"][0]
+        self.assertEqual(len(item["preview"]), 200)
+
+    def test_сводка(self):
+        stats = storage.stats()
+        self.assertTrue(stats["ready"])
+        self.assertEqual(stats["total"], 3)
+        self.assertEqual(stats["needs_review"], 1)
+        self.assertEqual(stats["failed"], 1)
+
+
+class FailureTest(unittest.TestCase):
+    """Отказ хранилища не роняет сервис."""
+
+    def setUp(self):
+        self.saved = (storage.DB_PATH, storage.ENABLED, storage._ready)
+
+    def tearDown(self):
+        storage.DB_PATH, storage.ENABLED, storage._ready = self.saved
+
+    def test_недоступныйПутьНеБросаетИсключение(self):
+        storage.DB_PATH = "/dev/null/нет/results.db"
+        storage.ENABLED = True
+        self.assertFalse(storage.init())
+        self.assertFalse(storage.ready())
+        self.assertIsNone(storage.save({"request_id": "x"}))
+        self.assertEqual(storage.listResults()["items"], [])
+        self.assertEqual(storage.getByRequest("x"), [])
+        self.assertFalse(storage.stats()["ready"])
+
+    def test_выключенноеХранилищеНеСоздаётФайл(self):
+        tmp = support.tmpDir()
+        try:
+            storage.DB_PATH = os.path.join(tmp, "results.db")
+            storage.ENABLED = False
+            storage._ready = False
+            self.assertFalse(storage.init())
+            self.assertIsNone(storage.save({"request_id": "x"}))
+            self.assertFalse(os.path.exists(storage.DB_PATH))
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
+if __name__ == "__main__":
+    unittest.main()
