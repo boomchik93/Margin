@@ -106,3 +106,73 @@ class ParseLinesTest(unittest.TestCase):
         lines, parsed = ocr.parseLines("первая строка\n\nвторая строка")
         self.assertFalse(parsed)
         self.assertEqual(lines, ["первая строка", "вторая строка"])
+
+
+class ImageTestCase(unittest.TestCase):
+    def setUp(self):
+        self.dir = support.tmpDir()
+        self.image = support.makeImage(os.path.join(self.dir, "page.png"))
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+
+class RecognizeTextTest(ImageTestCase):
+    def test_текстСобираетсяИзСтрок(self):
+        model = FakeModel({"text": {"lines": ["Привет,", "это письмо."]}})
+        result = ocr.recognizeText(model, self.image, config())
+        self.assertEqual(result["mode"], "text")
+        self.assertTrue(result["parsed"])
+        self.assertEqual(result["text"], "Привет,\nэто письмо.")
+        self.assertEqual(result["unclear_count"], 0)
+        self.assertNotIn("error", result)
+
+    def test_неразборчивыеСловаСчитаются(self):
+        model = FakeModel({"text": {"lines": ["купить [?] и [?]", "хлеб"]}})
+        result = ocr.recognizeText(model, self.image, config())
+        self.assertEqual(result["unclear_count"], 2)
+
+    def test_молчаниеМоделиНеВыглядитКакПустаяСтраница(self):
+        result = ocr.recognizeText(FakeModel({}), self.image, config())
+        self.assertEqual(result["lines"], [])
+        self.assertEqual(result["error"], "model_no_response")
+
+    def test_пустаяСтраницаНеОшибка(self):
+        result = ocr.recognizeText(FakeModel({"text": {"lines": []}}),
+                                   self.image, config())
+        self.assertEqual(result["lines"], [])
+        self.assertNotIn("error", result)
+
+    def test_режимЧтенияПечатногоМеняетПромпт(self):
+        model = FakeModel({"text": {"lines": []}})
+        ocr.recognizeText(model, self.image, config())
+        ocr.recognizeText(model, self.image, config(), printed=True)
+        self.assertIn("ТОЛЬКО рукописный", model.calls[0][1])
+        self.assertIn("ВЕСЬ текст", model.calls[1][1])
+
+    def test_уверенностьПоСтрокамЕстьТолькоСВероятностями(self):
+        raw = '{"lines": ["да", "нет"]}'
+        tokens = [{"token": '{"lines": ["', "logprob": -0.01},
+                  {"token": "да", "logprob": -0.4},
+                  {"token": '", "', "logprob": -0.01},
+                  {"token": "нет", "logprob": -2.5},
+                  {"token": '"]}', "logprob": -0.01}]
+        with_tokens = ocr.recognizeText(
+            FakeModel({"text": raw}, {"text": tokens}), self.image, config())
+        self.assertEqual(with_tokens["line_logprob_min"], [-0.4, -2.5])
+
+        without = ocr.recognizeText(FakeModel({"text": raw}),
+                                    self.image, config())
+        self.assertNotIn("line_logprob_min", without)
+
+    def test_временныеФайлыУдаляются(self):
+        seen = []
+
+        def model(prompt, image_path, n_predict, tag):
+            seen.append(image_path)
+            return '{"lines": []}', []
+
+        ocr.recognizeText(model, self.image, config())
+        self.assertNotEqual(seen[0], self.image)
+        self.assertFalse(os.path.exists(seen[0]))
+        self.assertTrue(os.path.exists(self.image))
