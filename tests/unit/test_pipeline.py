@@ -383,3 +383,69 @@ class EngineTest(ImageTestCase):
         result = engine.readPage(self.image)
         self.assertEqual(result["text"], "строка")
         self.assertEqual(result["backend"], "cli")
+
+
+class EngineCliTest(ImageTestCase):
+    """Вызов llama-mtmd-cli: вместо бинарника — скрипт-заглушка."""
+
+    def engine(self, script):
+        import stat
+        binary = os.path.join(self.dir, "llama-mtmd-cli")
+        with open(binary, "w", encoding="utf-8") as f:
+            f.write(script)
+        os.chmod(binary, os.stat(binary).st_mode | stat.S_IEXEC)
+        for name in ("model.gguf", "mmproj.gguf"):
+            open(os.path.join(self.dir, name), "wb").close()
+
+        cfg = config()
+        cfg["paths"].update({"models_folder": self.dir,
+                             "model_file": "model.gguf",
+                             "mmproj_file": "mmproj.gguf",
+                             "llama_executable": binary})
+        return ocr.Engine(cfg)
+
+    def test_ответБинарникаДоходитДоРезультата(self):
+        engine = self.engine(
+            "#!/bin/sh\n"
+            "echo 'llama: loading model' >&2\n"
+            "echo '{\"lines\": [\"hello\", \"world\"]}'\n")
+        self.assertTrue(engine.ready())
+        result = engine.readPage(self.image)
+        self.assertEqual(result["lines"], ["hello", "world"])
+        self.assertEqual(result["backend"], "cli")
+        self.assertNotIn("error", result)
+
+    def test_бинарникуПередаютсяМодельКартинкаИПромпт(self):
+        engine = self.engine(
+            "#!/bin/sh\n"
+            "printf '%s\\n' \"$@\" > \"$(dirname \"$0\")/args.txt\"\n"
+            "echo '{\"lines\": []}'\n")
+        engine.readPage(self.image)
+        with open(os.path.join(self.dir, "args.txt"), encoding="utf-8") as f:
+            args = f.read()
+        self.assertIn(os.path.join(self.dir, "model.gguf"), args)
+        self.assertIn(os.path.join(self.dir, "mmproj.gguf"), args)
+        self.assertIn("--image", args)
+        self.assertIn("Расшифруй текст", args)
+
+    def test_упавшийБинарникДаётОшибкуАНеПустуюСтраницу(self):
+        engine = self.engine("#!/bin/sh\necho 'out of memory' >&2\nexit 1\n")
+        result = engine.readPage(self.image)
+        self.assertEqual(result["error"], "model_no_response")
+        self.assertEqual(result["lines"], [])
+
+    def test_поляПоСхемеЧерезБинарник(self):
+        engine = self.engine(
+            "#!/bin/sh\n"
+            "echo '{\"title\": \"report\", \"amount\": \"12\", "
+            "\"agree\": \"checked\"}'\n")
+        sch, _ = schemas.validate(support.SAMPLE_SCHEMA, name="sample")
+        result = engine.readPage(self.image, sch)
+        self.assertEqual(result["fields"]["title"], "REPORT")
+        self.assertEqual(result["fields"]["amount"], "12")
+        self.assertEqual(result["fields"]["agree"], "checked")
+        self.assertEqual(result["confidence_reason"]["amount"], "format_ok")
+
+
+if __name__ == "__main__":
+    unittest.main()
