@@ -294,3 +294,55 @@ class RecognizeFormTest(ImageTestCase):
         _, meta = ocr.recognizeForm(model, self.image, sch, config())
         self.assertEqual(meta["logprobs"]["title"], (-0.3, 1))
         self.assertNotIn("phone", meta["logprobs"])
+
+
+class PostprocessTest(unittest.TestCase):
+    def setUp(self):
+        self.dir = support.tmpDir()
+        self.saved = dictmatch.DICT_DIR
+        dictmatch.DICT_DIR = self.dir
+        with open(os.path.join(self.dir, "cities.json"), "w",
+                  encoding="utf-8") as f:
+            json.dump({"values": ["Казань", "Самара"], "max_dist": 1.0}, f,
+                      ensure_ascii=False)
+        dictmatch.reload()
+        self.sch, errors = schemas.validate(support.SAMPLE_SCHEMA,
+                                            name="sample")
+        self.assertEqual(errors, [])
+
+    def tearDown(self):
+        dictmatch.DICT_DIR = self.saved
+        dictmatch.reload()
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def test_результатВсегдаСодержитВсеПоляСхемы(self):
+        result = ocr.postprocessForm(self.sch, {"title": "отчёт"})
+        self.assertEqual(set(result["fields"]),
+                         {f["key"] for f in self.sch["fields"]})
+        self.assertEqual(result["fields"]["title"], "ОТЧЁТ")
+
+    def test_трассировкаПоказываетКаждуюСтадию(self):
+        result = ocr.postprocessForm(self.sch, {"city": " казанб "})
+        self.assertEqual(result["trace"]["city"], {
+            "recognized": "казанб", "normalized": "казанб",
+            "final": "Казань", "dict": "fixed"})
+        self.assertEqual(result["dict_status"], {"city": "fixed"})
+
+    def test_уверенностьСчитаетсяПоПрочитанномуАНеПоПодстановке(self):
+        result = ocr.postprocessForm(self.sch, {"city": "казанб"})
+        self.assertEqual(result["confidence_reason"]["city"], "unverified")
+
+    def test_очередьПроверкиСобираетсяИзВсехПричин(self):
+        result = ocr.postprocessForm(self.sch, {
+            "title": "отчёт", "city": "Воркута", "issued": "99.99.2024",
+            "agree": "checked"})
+        self.assertEqual(result["needs_review"], ["issued", "city"])
+        self.assertEqual(result["candidates"]["city"], [])
+
+    def test_вероятностиПопадаютВРезультатТолькоЕслиИзмерены(self):
+        plain = ocr.postprocessForm(self.sch, {"title": "отчёт"})
+        self.assertNotIn("logprob_min", plain)
+        measured = ocr.postprocessForm(
+            self.sch, {"title": "отчёт"},
+            {"logprobs": {"title": (-0.3, 1), "чужой": (-9, 1)}})
+        self.assertEqual(measured["logprob_min"], {"title": -0.3})
