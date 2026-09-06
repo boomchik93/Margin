@@ -346,3 +346,40 @@ class PostprocessTest(unittest.TestCase):
             self.sch, {"title": "отчёт"},
             {"logprobs": {"title": (-0.3, 1), "чужой": (-9, 1)}})
         self.assertEqual(measured["logprob_min"], {"title": -0.3})
+
+
+class EngineTest(ImageTestCase):
+    """Движок без модели: сбой чтения не должен ронять вызывающего."""
+
+    def engine(self):
+        engine = ocr.Engine(config())
+        return engine
+
+    def test_безМоделиДвижокНеГотов(self):
+        engine = self.engine()
+        engine.model_path = os.path.join(self.dir, "нет.gguf")
+        self.assertFalse(engine.ready())
+
+    def test_сбойЧтенияВозвращаетСтраницуСОшибкой(self):
+        engine = self.engine()
+
+        def broken(*args, **kwargs):
+            raise RuntimeError("модель упала")
+
+        engine.read = broken
+        text = engine.readPage(self.image)
+        self.assertEqual(text["error"], "recognition_failed")
+        self.assertEqual(text["lines"], [])
+
+        sch, _ = schemas.validate(support.SAMPLE_SCHEMA, name="sample")
+        form = engine.readPage(self.image, sch)
+        self.assertEqual(form["error"], "recognition_failed")
+        self.assertEqual(set(form["fields"]),
+                         {f["key"] for f in sch["fields"]})
+
+    def test_страницаЧитаетсяЧерезПодставленнуюМодель(self):
+        engine = self.engine()
+        engine.read = FakeModel({"text": {"lines": ["строка"]}})
+        result = engine.readPage(self.image)
+        self.assertEqual(result["text"], "строка")
+        self.assertEqual(result["backend"], "cli")
