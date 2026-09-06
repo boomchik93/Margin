@@ -176,3 +176,121 @@ class RecognizeTextTest(ImageTestCase):
         self.assertNotEqual(seen[0], self.image)
         self.assertFalse(os.path.exists(seen[0]))
         self.assertTrue(os.path.exists(self.image))
+
+
+class RecognizeFormTest(ImageTestCase):
+    def schema(self, zones=None):
+        raw = dict(support.SAMPLE_SCHEMA)
+        if zones:
+            raw["zones"] = zones
+        sch, errors = schemas.validate(raw, name="sample")
+        self.assertEqual(errors, [])
+        return sch
+
+    def test_одинПроходБезЗон(self):
+        model = FakeModel({"full": {"title": "Отчёт", "amount": "12"}})
+        result, meta = ocr.recognizeForm(model, self.image, self.schema(),
+                                         config())
+        self.assertEqual(result["title"], "Отчёт")
+        self.assertEqual(result["city"], "")
+        self.assertTrue(meta["parsed"])
+        self.assertEqual([c[0] for c in model.calls], ["full"])
+
+    def test_неразобранныйОтветДаётПолнуюПустуюСхему(self):
+        model = FakeModel({"full": "не могу прочитать"})
+        result, meta = ocr.recognizeForm(model, self.image, self.schema(),
+                                         config())
+        self.assertEqual(result, schemas.emptyResult(self.schema()))
+        self.assertFalse(meta["parsed"])
+        self.assertNotIn("error", meta)
+
+    def test_молчаниеМоделиПомечаетсяОшибкой(self):
+        _, meta = ocr.recognizeForm(FakeModel({}), self.image, self.schema(),
+                                    config())
+        self.assertEqual(meta["error"], "model_no_response")
+
+    def test_зонаЗаполняетПустоеНоНеЗатираетПрочитанное(self):
+        sch = self.schema([{"name": "top", "box": [0, 0, 1, 0.5],
+                            "fields": ["title", "city"]}])
+        model = FakeModel({"full": {"title": "Отчёт", "city": ""},
+                           "top": {"title": "Отчет2", "city": "Казань"}})
+        result, _ = ocr.recognizeForm(model, self.image, sch, config())
+        self.assertEqual(result["title"], "Отчёт")
+        self.assertEqual(result["city"], "Казань")
+
+    def test_зонаСOverrideЗамещает(self):
+        sch = self.schema([{"name": "top", "box": [0, 0, 1, 0.5],
+                            "fields": ["title"], "override": True}])
+        model = FakeModel({"full": {"title": "Отчёт"},
+                           "top": {"title": "Отчёт за год"}})
+        result, _ = ocr.recognizeForm(model, self.image, sch, config())
+        self.assertEqual(result["title"], "Отчёт за год")
+
+    def test_пустойОтветЗоныСOverrideНеСтираетЗначение(self):
+        sch = self.schema([{"name": "top", "box": [0, 0, 1, 0.5],
+                            "fields": ["title"], "override": True}])
+        model = FakeModel({"full": {"title": "Отчёт"}, "top": {"title": ""}})
+        result, _ = ocr.recognizeForm(model, self.image, sch, config())
+        self.assertEqual(result["title"], "Отчёт")
+
+    def test_отметкаЗоныПринимаетсяКогдаОнаОпределённее(self):
+        sch = self.schema([{"name": "marks", "box": [0, 0.5, 1, 1],
+                            "fields": ["agree"]}])
+        unclear = FakeModel({"full": {"agree": "unclear"},
+                             "marks": {"agree": "checked"}})
+        result, _ = ocr.recognizeForm(unclear, self.image, sch, config())
+        self.assertEqual(result["agree"], "checked")
+
+        sure = FakeModel({"full": {"agree": "unchecked"},
+                          "marks": {"agree": "checked"}})
+        result, _ = ocr.recognizeForm(sure, self.image, sch, config())
+        self.assertEqual(result["agree"], "unchecked")
+
+    def test_голосованиеСводитПроходыПосимвольно(self):
+        sch = self.schema([{"name": "phone", "box": [0, 0.2, 1, 0.4],
+                            "fields": ["phone"], "vote": True}])
+        model = FakeModel({
+            "full": {"phone": "89001234567"},
+            "phone-1": {"phone": "89001284567"},
+            "phone-2": {"phone": "39001234567"},
+            "phone-3": {"phone": "89001234567"},
+        })
+        result, meta = ocr.recognizeForm(model, self.image, sch, config())
+        self.assertEqual(result["phone"], "89001234567")
+        self.assertEqual(meta["votes"]["phone"], {"total": 4, "agree": 2})
+
+    def test_одинГолосЗоныНеПереписываетОсновнойПроход(self):
+        sch = self.schema([{"name": "phone", "box": [0, 0.2, 1, 0.4],
+                            "fields": ["phone"], "vote": True}])
+        model = FakeModel({"full": {"phone": "89001234567"},
+                           "phone-1": {"phone": "11111111111"}})
+        result, meta = ocr.recognizeForm(model, self.image, sch, config())
+        self.assertEqual(result["phone"], "89001234567")
+        self.assertEqual(meta["votes"], {})
+
+    def test_фрагментацияВыключаетсяНастройкой(self):
+        sch = self.schema([{"name": "top", "box": [0, 0, 1, 0.5],
+                            "fields": ["title"]}])
+        model = FakeModel({"full": {"title": "Отчёт"},
+                           "top": {"title": "Другое"}})
+        ocr.recognizeForm(model, self.image, sch, config(fragmentation=False))
+        self.assertEqual([c[0] for c in model.calls], ["full"])
+
+    def test_вероятностьСнимаетсяСПоляСобранногоГолосованием(self):
+        """Она измерена для строки основного прохода, а в результате лежит
+        другая — собранная. Чужое число хуже отсутствующего."""
+        sch = self.schema([{"name": "phone", "box": [0, 0.2, 1, 0.4],
+                            "fields": ["phone"], "vote": True}])
+        raw = '{"title": "Отчёт", "phone": "89001234567"}'
+        tokens = [{"token": '{"title": "', "logprob": -0.01},
+                  {"token": "Отчёт", "logprob": -0.3},
+                  {"token": '", "phone": "', "logprob": -0.01},
+                  {"token": "89001234567", "logprob": -1.2},
+                  {"token": '"}', "logprob": -0.01}]
+        model = FakeModel({"full": raw,
+                           "phone-1": {"phone": "89001234567"},
+                           "phone-2": {"phone": "89001234567"}},
+                          {"full": tokens})
+        _, meta = ocr.recognizeForm(model, self.image, sch, config())
+        self.assertEqual(meta["logprobs"]["title"], (-0.3, 1))
+        self.assertNotIn("phone", meta["logprobs"])
