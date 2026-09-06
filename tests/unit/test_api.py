@@ -199,3 +199,94 @@ class UploadValidationTest(unittest.TestCase):
         response = post()
         self.assertEqual(response.status_code, 503)
         self.assertFalse(response.get_json()["success"])
+
+
+class RecognitionTest(unittest.TestCase):
+    def test_безСхемыВозвращаетсяТекст(self):
+        engine = FakeEngine().install(self)
+        response = post()
+        body = response.get_json()
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(body["success"])
+        self.assertEqual((body["type"], body["mode"]), ("image", "text"))
+        self.assertEqual(body["lines"], ["первая", "вторая"])
+        self.assertEqual(engine.calls[0]["schema"], None)
+        self.assertTrue(engine.calls[0]["exists"])
+
+    def test_соСхемойВозвращаютсяПоля(self):
+        engine = FakeEngine().install(self)
+        body = post(schema="example_form").get_json()
+        self.assertEqual(body["mode"], "form")
+        self.assertEqual(body["schema"], "example_form")
+        self.assertIn("full_name", body["fields"])
+        self.assertEqual(body["needs_review"], ["city"])
+        # Трассировка стадий наружу не идёт: она лежит в истории.
+        self.assertNotIn("trace", body)
+        self.assertEqual(engine.calls[0]["schema"], "example_form")
+
+    def test_схемаМожетПрийтиВЗапросе(self):
+        engine = FakeEngine().install(self)
+        body = post(schema_json=json.dumps(
+            {"fields": [{"key": "note", "label": "Заметка"}]})).get_json()
+        self.assertEqual(body["schema"], "inline")
+        self.assertEqual(list(body["fields"]), ["note"])
+        self.assertEqual(engine.calls[0]["schema"], "inline")
+
+    def test_параметрыТекстовогоРежимаДоходятДоДвижка(self):
+        engine = FakeEngine().install(self)
+        post(language="EN", printed="1")
+        self.assertEqual(engine.calls[0]["language"], "en")
+        self.assertTrue(engine.calls[0]["printed"])
+
+    def test_имяФайлаНаКириллицеПринимается(self):
+        FakeEngine().install(self)
+        self.assertEqual(post(filename="письмо.png").status_code, 200)
+
+    def test_загруженныйФайлУдаляетсяПослеОбработки(self):
+        FakeEngine().install(self)
+        post()
+        self.assertEqual(os.listdir(_uploads), [])
+
+    def test_молчаниеМоделиДаёт502(self):
+        FakeEngine({"mode": "text", "parsed": False, "text": "", "lines": [],
+                    "unclear_count": 0, "error": "model_no_response"}
+                   ).install(self)
+        response = post()
+        self.assertEqual(response.status_code, 502)
+        self.assertFalse(response.get_json()["success"])
+
+    def test_результатПопадаетВИсторию(self):
+        if not storage.ready():
+            self.skipTest("хранилище недоступно")
+        FakeEngine().install(self)
+        data = {"file": (png(), "scan.png"), "schema": "example_form"}
+        response = client.post("/api/ocr", data=data,
+                               content_type="multipart/form-data",
+                               headers={"X-Request-ID": "history-test-1"})
+        self.assertEqual(response.status_code, 200)
+
+        detail = client.get("/api/results/history-test-1").get_json()
+        self.assertTrue(detail["success"])
+        page = detail["results"][0]
+        self.assertEqual(page["schema_name"], "example_form")
+        self.assertEqual(page["needs_review"], ["city"])
+        self.assertEqual(page["trace"], {"city": {"recognized": "x"}})
+
+        listed = client.get("/api/results?schema=example_form&needs_review=1")
+        self.assertIn("history-test-1",
+                      [i["request_id"] for i in listed.get_json()["items"]])
+
+    @unittest.skipUnless(HAS_FITZ, "PyMuPDF не установлен")
+    def test_pdfОбрабатываетсяПостранично(self):
+        import fitz
+        doc = fitz.open()
+        for _ in range(3):
+            doc.new_page()
+        pdf = io.BytesIO(doc.tobytes())
+        doc.close()
+
+        engine = FakeEngine().install(self)
+        body = post(filename="scan.pdf", body=pdf).get_json()
+        self.assertEqual((body["type"], body["pages"]), ("pdf", 3))
+        self.assertEqual([r["page"] for r in body["results"]], [1, 2, 3])
+        self.assertEqual(len(engine.calls), 3)
