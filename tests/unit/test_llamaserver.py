@@ -137,3 +137,93 @@ class FindServerTest(unittest.TestCase):
         cli = os.path.join(self.dir, "llama-mtmd-cli")
         open(cli, "wb").close()
         self.assertIsNone(llamaserver.findServer(cli))
+
+
+class ReadTest(unittest.TestCase):
+    """Запрос чтения: вместо llama-server — маленький HTTP-сервер в потоке."""
+
+    def setUp(self):
+        import http.server
+        import json
+        import threading
+
+        test = self
+        test.requests = []
+        test.reply = {"choices": [{
+            "message": {"content": '{"lines": ["ok"]}'},
+            "logprobs": {"content": [{"token": "ok", "logprob": -0.2}]},
+            "finish_reason": "stop"}]}
+        test.status = 200
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                length = int(self.headers.get("Content-Length") or 0)
+                test.requests.append(
+                    (self.path, json.loads(self.rfile.read(length))))
+                body = json.dumps(test.reply).encode("utf-8")
+                self.send_response(test.status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        self.httpd = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+
+        self.dir = tempfile.mkdtemp()
+        self.image = os.path.join(self.dir, "page.png")
+        with open(self.image, "wb") as f:
+            f.write(b"\x89PNG-bytes")
+        self.server = llamaserver.LlamaServer(
+            "unused", os.path.join(self.dir, "model.gguf"),
+            os.path.join(self.dir, "mmproj.gguf"), "99", 4096,
+            port=self.httpd.server_address[1])
+
+    def tearDown(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def test_текстИВероятностиВозвращаются(self):
+        text, tokens = self.server.read("prompt", self.image)
+        self.assertEqual(text, '{"lines": ["ok"]}')
+        self.assertEqual(tokens, [{"token": "ok", "logprob": -0.2}])
+
+    def test_запросФиксируетВыборкуИПроситВероятности(self):
+        # Одной temperature=0 для воспроизводимости мало: сервер подставляет
+        # свои top_k/top_p и случайный seed.
+        self.server.read("prompt", self.image, n_predict=512)
+        path, body = self.requests[0]
+        self.assertEqual(path, "/v1/chat/completions")
+        self.assertEqual((body["temperature"], body["top_k"], body["seed"]),
+                         (0, 1, 0))
+        self.assertEqual(body["max_tokens"], 512)
+        self.assertTrue(body["logprobs"])
+        content = body["messages"][0]["content"]
+        self.assertEqual(content[0], {"type": "text", "text": "prompt"})
+        self.assertTrue(content[1]["image_url"]["url"].startswith(
+            "data:image/png;base64,"))
+
+    def test_пустойОтветЭтоОтказ(self):
+        # Так проявляется переполнение контекста: без проверки документ
+        # выглядел бы незаполненным.
+        self.reply = {"choices": [{"message": {"content": "  "},
+                                   "finish_reason": "length"}]}
+        self.assertEqual(self.server.read("prompt", self.image), ("", []))
+
+    def test_ошибкаСервераНеБросаетИсключение(self):
+        self.status = 500
+        self.assertEqual(self.server.read("prompt", self.image), ("", []))
+
+    def test_непрочитаннаяКартинкаНеБросаетИсключение(self):
+        self.assertEqual(
+            self.server.read("prompt", os.path.join(self.dir, "missing.png")),
+            ("", []))
+        self.assertEqual(self.requests, [])
+
+
+if __name__ == "__main__":
+    unittest.main()
