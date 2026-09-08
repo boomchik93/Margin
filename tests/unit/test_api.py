@@ -290,3 +290,35 @@ class RecognitionTest(unittest.TestCase):
         self.assertEqual((body["type"], body["pages"]), ("pdf", 3))
         self.assertEqual([r["page"] for r in body["results"]], [1, 2, 3])
         self.assertEqual(len(engine.calls), 3)
+
+
+class ResultsApiTest(unittest.TestCase):
+    def test_историяОтвечаетДажеПустая(self):
+        response = client.get("/api/results")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("items", response.get_json())
+
+    def test_некорректныйLimitОтклоняется(self):
+        self.assertEqual(client.get("/api/results?limit=много").status_code, 400)
+
+    def test_несуществующийЗапрос404(self):
+        self.assertEqual(client.get("/api/results/нет-такого").status_code, 404)
+
+
+class RateLimitTest(unittest.TestCase):
+    def test_превышениеЛимитаДаёт429(self):
+        FakeEngine().install(self)
+        limit = app_module.config["api"]["rate_limit"]
+        saved = dict(limit)
+        self.addCleanup(lambda: (limit.update(saved),
+                                 app_module.request_counts.clear()))
+        limit.update({"enabled": True, "requests_per_minute": 2})
+        app_module.request_counts.clear()
+
+        self.assertEqual(post().status_code, 200)
+        self.assertEqual(post().status_code, 200)
+        self.assertEqual(post().status_code, 429)
+
+
+if __name__ == "__main__":
+    unittest.main()
