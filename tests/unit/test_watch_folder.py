@@ -111,3 +111,79 @@ class UniquePathTest(FolderTestCase):
         self.assertTrue(second.endswith(".json"))
         open(second, "w").close()
         self.assertNotIn(watch_folder.uniquePath(path), (path, second))
+
+
+class ProcessFileTest(FolderTestCase):
+    def run_file(self, name, engine=None, **kwargs):
+        engine = engine or FakeEngine()
+        ok = watch_folder.processFile(engine, os.path.join(self.in_dir, name),
+                                      self.out_dir, self.archive, **kwargs)
+        return ok, engine
+
+    def result(self, name):
+        with open(os.path.join(self.out_dir, name), encoding="utf-8") as f:
+            return json.load(f)
+
+    def test_результатВOutОригиналВАрхив(self):
+        self.put("letter.png")
+        ok, _ = self.run_file("letter.png")
+        self.assertTrue(ok)
+        export = self.result("letter.json")
+        self.assertEqual(export["source_file"], "letter.png")
+        self.assertEqual(export["pages"], 1)
+        self.assertEqual(export["results"][0]["text"], "строка")
+        self.assertEqual(os.listdir(self.in_dir), ["archive"])
+        self.assertEqual(os.listdir(self.archive), ["letter.png"])
+
+    def test_трассировкаВРезультатНеПопадает(self):
+        self.put("letter.png")
+        self.run_file("letter.png")
+        self.assertNotIn("trace", self.result("letter.json")["results"][0])
+
+    def test_недописанногоФайлаВOutНеОстаётся(self):
+        """Приёмник читает out/ таким же опросом и подхватить половину JSON
+        ему нельзя: запись идёт через временный файл."""
+        self.put("letter.png")
+        self.run_file("letter.png")
+        self.assertEqual(os.listdir(self.out_dir), ["letter.json"])
+
+    def test_повторныйЗаездНеЗатираетПрежнийРезультат(self):
+        self.put("letter.png")
+        self.run_file("letter.png")
+        self.put("letter.png")
+        self.run_file("letter.png")
+        self.assertEqual(len(os.listdir(self.out_dir)), 2)
+        self.assertEqual(len(os.listdir(self.archive)), 2)
+
+    def test_сбойСтраницыНеТеряетФайл(self):
+        self.put("bad.png")
+        ok, _ = self.run_file("bad.png", FakeEngine(fail_on=["bad.png"]))
+        self.assertTrue(ok)
+        export = self.result("bad.json")
+        self.assertEqual(export["pages_failed"], 1)
+        self.assertEqual(export["results"][0]["error"], "page_failed")
+
+    def test_битыйФайлУезжаетВАрхивИНеБерётсяСнова(self):
+        """Иначе демон падал бы на нём на каждом обходе вечно."""
+        self.put("broken.pdf", b"not a pdf")
+        ok, _ = self.run_file("broken.pdf")
+        self.assertFalse(ok)
+        self.assertEqual(os.listdir(self.out_dir), [])
+        self.assertEqual(os.listdir(self.archive), ["broken.pdf"])
+        self.assertEqual(os.listdir(self.in_dir), ["archive"])
+
+
+class MainTest(FolderTestCase):
+    def test_выходСовпадающийСВходомОтклоняется(self):
+        code = watch_folder.main(["--in", self.in_dir, "--out", self.in_dir,
+                                  "--once"])
+        self.assertEqual(code, 2)
+
+    def test_неизвестнаяСхемаОтклоняется(self):
+        code = watch_folder.main(["--in", self.in_dir, "--out", self.out_dir,
+                                  "--schema", "нет-такой", "--once"])
+        self.assertEqual(code, 2)
+
+
+if __name__ == "__main__":
+    unittest.main()
