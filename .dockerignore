@@ -1,0 +1,35 @@
+.git
+.gitignore
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.pytest_cache/
+
+# Редакторы и ОС
+.vscode/
+.idea/
+.DS_Store
+
+# Монтируются томами, в образ не идут
+models/*
+uploads/*
+logs/
+data/in/
+data/out/
+data/*.db
+data/*.db-wal
+data/*.db-shm
+
+# Собирается в контейнере
+llama.cpp/
+
+# В рантайме не нужны
+tests/
+.env
+Dockerfile
+docker-compose.yml
+.dockerignore
