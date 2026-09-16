@@ -1,0 +1,84 @@
+# Пример конфигурации Nginx перед сервисом распознавания.
+# Скопируйте в /etc/nginx/sites-available/ocr-service и создайте симлинк:
+#   sudo ln -s /etc/nginx/sites-available/ocr-service /etc/nginx/sites-enabled/
+
+# HTTP -> HTTPS
+server {
+    listen 80;
+    listen [::]:80;
+    server_name ocr.example.com;  # замените на свой домен
+
+    return 301 https://$server_name$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name ocr.example.com;  # замените на свой домен
+
+    # Сертификаты (например, Let's Encrypt)
+    ssl_certificate /etc/letsencrypt/live/ocr.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/ocr.example.com/privkey.pem;
+
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+    ssl_prefer_server_ciphers on;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 10m;
+
+    access_log /var/log/nginx/ocr-access.log;
+    error_log /var/log/nginx/ocr-error.log;
+
+    # Предел размера загрузки. Должен быть НЕ МЕНЬШЕ server.max_content_length
+    # сервиса (по умолчанию 128 МБ), иначе nginx оборвёт загрузку раньше
+    # сервиса и с другим кодом.
+    client_max_body_size 150M;
+    client_body_timeout 900s;
+
+    # Авторизация. У самого сервиса её НЕТ: любой, кто дотянулся до порта,
+    # может отправлять файлы и читать историю распознаваний. Пароль:
+    #     sudo htpasswd -c /etc/nginx/.htpasswd ocr-user
+    auth_basic "OCR";
+    auth_basic_user_file /etc/nginx/.htpasswd;
+
+    location / {
+        proxy_pass http://localhost:5002;
+        proxy_http_version 1.1;
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # Идентификатор запроса клиента должен дойти до сервиса: по нему
+        # записи в журналах обеих сторон сходятся по одному ключу.
+        proxy_set_header X-Request-ID $http_x_request_id;
+
+        # Таймауты под длительное распознавание. Страница читается от секунд
+        # до десятков секунд, многостраничный PDF обрабатывается постранично,
+        # и время складывается. Значение nginx по умолчанию (60 с) оборвёт
+        # запрос, а сервис при этом доведёт работу до конца и запишет
+        # результат в историю.
+        proxy_connect_timeout 75s;
+        proxy_send_timeout 900s;
+        proxy_read_timeout 900s;
+
+        proxy_buffering off;
+        proxy_request_buffering off;
+    }
+
+    # Проба живости — без авторизации: её опрашивает мониторинг, а данных
+    # она не отдаёт.
+    location /api/health {
+        auth_basic off;
+        proxy_pass http://localhost:5002/api/health;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        access_log off;
+    }
+}
+
+# Ограничение частоты запросов (по желанию). В http-блок /etc/nginx/nginx.conf:
+#     limit_req_zone $binary_remote_addr zone=api_limit:10m rate=10r/m;
+# и в location /:
+#     limit_req zone=api_limit burst=10 nodelay;

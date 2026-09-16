@@ -1,0 +1,145 @@
+services:
+  ocr-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ocr-service
+    image: ocr-service:latest
+
+    # Внешний порт берётся из .env -> SERVER_PORT, по умолчанию 5002
+    ports:
+      - "${SERVER_PORT:-5002}:${SERVER_PORT:-5002}"
+
+    # Тома. Всё, что должно пережить пересборку образа, лежит на хосте.
+    volumes:
+      # Модели (чтобы не скачивать каждый раз)
+      - ./models:/app/models:rw
+      # Загрузки (временные файлы)
+      - ./uploads:/app/uploads:rw
+      # Настройки и схемы полей: правятся без пересборки
+      - ./config:/app/config:ro
+      # Журналы. Без тома они исчезнут вместе с контейнером, и разбирать
+      # спорный результат будет нечем.
+      - ./logs:/app/logs:rw
+      # Данные: словари (data/dictionaries), история распознаваний
+      # (data/results.db) и папки обвязки (data/in, data/out).
+      - ./data:/app/data:rw
+
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PYTHONIOENCODING=utf-8
+      # Порт и хост сервиса (переопределяют settings.json)
+      - SERVER_PORT=${SERVER_PORT:-5002}
+      - SERVER_HOST=${SERVER_HOST:-0.0.0.0}
+      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - LD_LIBRARY_PATH=/app/llama.cpp/build/bin
+      # Способ вызова модели: cli или server
+      - LLAMA_BACKEND=${LLAMA_BACKEND:-cli}
+      # Журналирование
+      - LOG_DIR=/app/logs
+      - LOG_LEVEL=${LOG_LEVEL:-DEBUG}
+      - LOG_CONSOLE_LEVEL=${LOG_CONSOLE_LEVEL:-INFO}
+      - LOG_MAX_BYTES=${LOG_MAX_BYTES:-52428800}
+      - LOG_BACKUP_COUNT=${LOG_BACKUP_COUNT:-10}
+      - AUDIT_BACKUP_COUNT=${AUDIT_BACKUP_COUNT:-50}
+      - AUDIT_LOG_CONTENT=${AUDIT_LOG_CONTENT:-1}
+      - LOG_RAW_MODEL_OUTPUT=${LOG_RAW_MODEL_OUTPUT:-0}
+      # Словари, схемы и история
+      - DICT_DIR=/app/data/dictionaries
+      - SCHEMA_DIR=/app/config/schemas
+      - RESULTS_DB=/app/data/results.db
+      - RESULTS_DB_ENABLED=${RESULTS_DB_ENABLED:-1}
+      - TZ=${TZ:-UTC}
+
+    # Видеокарта
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: ${GPU_COUNT:-1}  # число GPU из .env; "all" = все
+              capabilities: [gpu]
+
+    restart: unless-stopped
+
+    # Журнал docker-демона — только консольный поток. Полный журнал сервис
+    # пишет сам в ./logs, и держать вторую копию в json-file незачем.
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${SERVER_PORT:-5002}/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+    networks:
+      - ocr-network
+
+  # Папочная обвязка: забор из data/in, результат в data/out, оригинал в
+  # data/in/archive. Отдельный профиль, потому что обвязка поднимает свой
+  # llama-server и делила бы видеопамять с ocr-service — на одной карте они
+  # мешают друг другу. Запуск: docker compose --profile watcher up -d ocr-watcher
+  ocr-watcher:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ocr-watcher
+    image: ocr-service:latest
+    profiles: [watcher]
+
+    # Чтобы извлекать поля по схеме, добавьте: "--schema", "example_form"
+    command: ["python", "tools/watch_folder.py",
+              "--in", "/app/data/in", "--out", "/app/data/out"]
+
+    volumes:
+      - ./models:/app/models:rw
+      - ./config:/app/config:ro
+      - ./logs:/app/logs:rw
+      - ./data:/app/data:rw
+
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PYTHONIOENCODING=utf-8
+      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - LD_LIBRARY_PATH=/app/llama.cpp/build/bin
+      - LOG_DIR=/app/logs
+      - LOG_LEVEL=${LOG_LEVEL:-DEBUG}
+      - LOG_CONSOLE_LEVEL=${LOG_CONSOLE_LEVEL:-INFO}
+      - LOG_MAX_BYTES=${LOG_MAX_BYTES:-52428800}
+      - LOG_BACKUP_COUNT=${LOG_BACKUP_COUNT:-10}
+      - LOG_RAW_MODEL_OUTPUT=${LOG_RAW_MODEL_OUTPUT:-0}
+      - DICT_DIR=/app/data/dictionaries
+      - SCHEMA_DIR=/app/config/schemas
+      - TZ=${TZ:-UTC}
+
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: ${GPU_COUNT:-1}
+              capabilities: [gpu]
+
+    restart: unless-stopped
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    networks:
+      - ocr-network
+
+networks:
+  ocr-network:
+    driver: bridge
