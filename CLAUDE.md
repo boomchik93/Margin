@@ -14,9 +14,10 @@
 | `test-writer` | Пишет модульные тесты | Правит только `tests/` |
 | `test-runner` | Прогоняет тесты и разбирает падения | Запускает и читает |
 | `reviewer` | Ревью диффа перед коммитом | Только читает |
+| `docs-writer` | Документация в `docs/` и README | Правит только `*.md` |
 
-Полный цикл задачи — `/feature <описание>`, отдельные шаги — `/test` и
-`/review`.
+Полный цикл задачи — `/feature <описание>`, отдельные шаги — `/test`,
+`/review` и `/docs`. Подробнее — [docs/AI_WORKFLOW.md](docs/AI_WORKFLOW.md).
 
 Правила:
 
@@ -41,6 +42,8 @@ src/storage.py        история распознаваний в SQLite
 src/logging_setup.py  JSON-журналы, аудит, request_id
 tools/watch_folder.py папочная обвязка: data/in -> data/out
 tests/unit/           модульные тесты, общая подготовка в support.py
+scripts/              запуск, остановка, журналы, скачивание модели
+docs/                 API, схемы, настройки, архитектура
 ```
 
 ## Команды
@@ -49,13 +52,15 @@ tests/unit/           модульные тесты, общая подготов
 python src/app.py                                           # сервис на :5002
 python -m unittest discover -s tests/unit -v                # все тесты
 python -m unittest discover -s tests/unit -p 'test_schema.py'  # один модуль
+docker compose up -d --build                                # сервис в Docker
 ```
 
 ## Соглашения
 
 - Python 3.11.
-- Комментарии и сообщения коммитов — на русском. Коммиты в стиле Conventional
-  Commits: `feat(ocr): ...`, `fix(storage): ...`, `test(api): ...`.
+- Комментарии, документация и сообщения коммитов — на русском. Коммиты в
+  стиле Conventional Commits: `feat(ocr): ...`, `fix(storage): ...`,
+  `test(api): ...`, `docs(api): ...`.
 - Ветки: `feature/<область>`, `test/<область>`, `docs/...`; в `main` —
   слиянием без fast-forward.
 - Сервис не выдумывает: пустое поле остаётся пустым, сомнительное уходит в
@@ -64,3 +69,5 @@ python -m unittest discover -s tests/unit -p 'test_schema.py'  # один мод
 - Новый модуль пишет в журнал через `logging_setup`, со сквозным `request_id`.
 - В тестах модель и llama.cpp всегда подменены заглушками: видеокарта и файл
   модели не нужны.
+- Документация описывает то, что есть в коде. Примеры ответов API берутся из
+  реального прогона, а не пишутся по памяти.
