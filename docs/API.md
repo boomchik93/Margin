@@ -202,3 +202,121 @@
 | 503 | Нет файла модели или llama.cpp |
 
 ---
+
+## GET /api/schemas
+
+```json
+{
+  "dir": "/app/config/schemas",
+  "schemas": [
+    {
+      "name": "example_form",
+      "title": "Анкета участника",
+      "language": "ru",
+      "fields": [
+        {"key": "full_name", "label": "Фамилия, имя, отчество", "type": "text", "required": true},
+        {"key": "city", "label": "Город", "type": "text", "required": false, "dictionary": "cities"}
+      ],
+      "zones": []
+    }
+  ],
+  "errors": {"broken.json": ["файл не разобран как JSON: ..."]}
+}
+```
+
+Файл схемы, не прошедший проверку, не загружается и виден в `errors` с
+причиной.
+
+`GET /api/schemas/{name}` возвращает схему целиком и `prompt` — текст,
+который уйдёт модели на полностраничном проходе. Удобно при отладке схемы.
+
+---
+
+## GET /api/dictionaries
+
+```json
+{
+  "dir": "/app/data/dictionaries",
+  "dir_exists": true,
+  "loaded": true,
+  "version": "9f1c2ab04d7e",
+  "dictionaries": {"cities": {"file": "cities.json", "values": 15, "skipped": 0, "max_dist": 1.0}},
+  "auto_reload": {"enabled": true, "min_interval_sec": 0.0},
+  "errors": []
+}
+```
+
+`version` — отпечаток содержимого словарей; он же пишется в историю рядом с
+каждым результатом.
+
+`POST /api/dictionaries/reload` перечитывает словари немедленно и возвращает
+то же состояние в поле `dictionaries`. Обычно не нужен: сервис сам замечает
+изменение файлов перед следующей страницей.
+
+---
+
+## GET /api/results
+
+История, новые записи первыми. Одна запись — одна страница.
+
+| Параметр | Описание |
+|---|---|
+| `limit` | Сколько вернуть, по умолчанию 50, не больше 500 |
+| `offset` | Сколько пропустить |
+| `date_from`, `date_to` | Границы даты, `ГГГГ-ММ-ДД`, включительно |
+| `q` | Подстрока в распознанном тексте или значениях полей (с учётом регистра для кириллицы) |
+| `schema` | Только результаты по этой схеме |
+| `status` | `ok` или `error` |
+| `needs_review` | `1` — только требующие ручной проверки |
+
+```json
+{
+  "success": true,
+  "limit": 50,
+  "offset": 0,
+  "total": 1,
+  "items": [
+    {
+      "id": 17,
+      "request_id": "5b1e77aa",
+      "created_at": "2026-09-02T14:12:03",
+      "source_name": "form.png",
+      "source_type": "image",
+      "page": 1,
+      "pages_total": 1,
+      "status": "ok",
+      "error": "",
+      "duration_seconds": 7.5,
+      "mode": "form",
+      "schema_name": "example_form",
+      "preview": "",
+      "review_count": 3,
+      "min_confidence": 25,
+      "dict_version": "9f1c2ab04d7e",
+      "model_name": "Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf"
+    }
+  ]
+}
+```
+
+`preview` — первые 200 символов текста (для режима `text`).
+
+## GET /api/results/{request_id}
+
+Все страницы одного запроса с полным содержимым: `text`, `fields`,
+`confidence`, `dict_status`, `needs_review` и `trace`.
+
+`trace` показывает путь каждого поля по стадиям:
+
+```json
+"trace": {
+  "city": {"recognized": "казанб", "normalized": "казанб", "final": "Казань", "dict": "fixed"},
+  "phone": {"recognized": "8 900 123-45-67", "normalized": "89001234567",
+            "final": "89001234567", "votes": {"total": 4, "agree": 3}}
+}
+```
+
+По одному итоговому значению не видно, чья это работа — модели, нормализации
+или словаря; по трассировке видно.
+
+---
