@@ -320,3 +320,37 @@
 или словаря; по трассировке видно.
 
 ---
+
+## GET /api/status
+
+Главная диагностическая ручка.
+
+```json
+{
+  "ready": true,
+  "model_exists": true,
+  "llama_exists": true,
+  "model_name": "Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf",
+  "backend": "cli",
+  "backend_configured": "server",
+  "gpu_layers": "99",
+  "pdf_support": true,
+  "hardware": {"device": "gpu", "vram_total_gb": 16, "cpu_cores": 12},
+  "schemas": ["example_form"],
+  "dictionaries": {"loaded": true, "version": "9f1c2ab04d7e", "sizes": {"cities": 15}, "errors": []},
+  "storage": {"enabled": true, "ready": true, "total": 412, "last_24h": 37, "needs_review": 58, "failed": 2}
+}
+```
+
+`ready: false` — распознавание вернёт 503; смотрите `model_exists` и
+`llama_exists`.
+
+`backend` — чем чтение идёт сейчас, `backend_configured` — что выбрано в
+настройках. `llama-server` поднимается при первом запросе распознавания,
+поэтому сразу после старта здесь `cli` даже при выбранном `server`.
+
+## GET /api/health
+
+Отвечает `{"status": "ok"}`, пока процесс жив. Готовность к распознаванию
+сюда намеренно не входит: иначе healthcheck Docker перезапускал бы контейнер
+из-за отсутствующего файла модели.
