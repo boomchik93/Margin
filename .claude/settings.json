@@ -3,6 +3,8 @@
     "allow": [
       "Bash(python -m unittest:*)",
       "Bash(python -c:*)",
+      "Bash(ruff check:*)",
+      "Bash(shellcheck:*)",
       "Bash(git status)",
       "Bash(git diff:*)",
       "Bash(git log:*)",
@@ -16,7 +18,21 @@
       "Read(./uploads/**)",
       "Read(./logs/**)",
       "Read(./data/in/**)",
-      "Read(./data/out/**)"
+      "Read(./data/out/**)",
+      "Read(./data/*.db)"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "f=$(jq -r '.tool_input.file_path // empty'); case \"$f\" in *.py) ruff check --quiet \"$f\" >&2 || exit 2 ;; esac"
+          }
+        ]
+      }
     ]
   }
 }
