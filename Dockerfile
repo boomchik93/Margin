@@ -1,7 +1,9 @@
 # Базовый образ с CUDA для ускорения на видеокарте
 FROM nvidia/cuda:12.1.0-devel-ubuntu22.04
 
-LABEL description="Handwriting recognition service: llama.cpp + Qwen2.5-VL"
+LABEL org.opencontainers.image.title="Margin" \
+      org.opencontainers.image.description="Handwritten text recognition service: llama.cpp + Qwen2.5-VL" \
+      org.opencontainers.image.licenses="MIT"
 
 # Отключаем интерактивные запросы при установке пакетов
 ENV DEBIAN_FRONTEND=noninteractive

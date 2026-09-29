@@ -1,6 +1,6 @@
-# Пример конфигурации Nginx перед сервисом распознавания.
-# Скопируйте в /etc/nginx/sites-available/ocr-service и создайте симлинк:
-#   sudo ln -s /etc/nginx/sites-available/ocr-service /etc/nginx/sites-enabled/
+# Пример конфигурации Nginx перед Margin.
+# Скопируйте в /etc/nginx/sites-available/margin и создайте симлинк:
+#   sudo ln -s /etc/nginx/sites-available/margin /etc/nginx/sites-enabled/
 
 # HTTP -> HTTPS
 server {
@@ -26,8 +26,8 @@ server {
     ssl_session_cache shared:SSL:10m;
     ssl_session_timeout 10m;
 
-    access_log /var/log/nginx/ocr-access.log;
-    error_log /var/log/nginx/ocr-error.log;
+    access_log /var/log/nginx/margin-access.log;
+    error_log /var/log/nginx/margin-error.log;
 
     # Предел размера загрузки. Должен быть НЕ МЕНЬШЕ server.max_content_length
     # сервиса (по умолчанию 128 МБ), иначе nginx оборвёт загрузку раньше
@@ -38,7 +38,7 @@ server {
     # Авторизация. У самого сервиса её НЕТ: любой, кто дотянулся до порта,
     # может отправлять файлы и читать историю распознаваний. Пароль:
     #     sudo htpasswd -c /etc/nginx/.htpasswd ocr-user
-    auth_basic "OCR";
+    auth_basic "Margin";
     auth_basic_user_file /etc/nginx/.htpasswd;
 
     location / {

@@ -1,10 +1,10 @@
 services:
-  ocr-service:
+  margin:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: ocr-service
-    image: ocr-service:latest
+    container_name: margin
+    image: margin:latest
 
     # Внешний порт берётся из .env -> SERVER_PORT, по умолчанию 5002
     ports:
@@ -80,18 +80,18 @@ services:
       start_period: 60s
 
     networks:
-      - ocr-network
+      - margin-network
 
   # Папочная обвязка: забор из data/in, результат в data/out, оригинал в
   # data/in/archive. Отдельный профиль, потому что обвязка поднимает свой
-  # llama-server и делила бы видеопамять с ocr-service — на одной карте они
-  # мешают друг другу. Запуск: docker compose --profile watcher up -d ocr-watcher
-  ocr-watcher:
+  # llama-server и делила бы видеопамять с margin — на одной карте они
+  # мешают друг другу. Запуск: docker compose --profile watcher up -d margin-watcher
+  margin-watcher:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: ocr-watcher
-    image: ocr-service:latest
+    container_name: margin-watcher
+    image: margin:latest
     profiles: [watcher]
 
     # Чтобы извлекать поля по схеме, добавьте: "--schema", "example_form"
@@ -138,8 +138,8 @@ services:
         max-file: "3"
 
     networks:
-      - ocr-network
+      - margin-network
 
 networks:
-  ocr-network:
+  margin-network:
     driver: bridge
