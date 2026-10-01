@@ -61,7 +61,7 @@ case "$MODE" in
         fi
         ;;
     docker)
-        docker compose logs -f --tail="$LINES" ocr-service
+        docker compose logs -f --tail="$LINES" margin
         ;;
     follow)
         [ -f logs/app.log ] || { echo "logs/app.log не найден"; exit 1; }

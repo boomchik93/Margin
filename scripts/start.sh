@@ -1,5 +1,5 @@
 #!/bin/bash
-# Запуск сервиса в Docker.
+# Запуск Margin в Docker.
 
 # Скрипт лежит в scripts/, а docker-compose.yml и конфиги — в корне проекта.
 cd "$(dirname "$0")/.." || exit 1

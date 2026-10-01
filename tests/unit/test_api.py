@@ -158,7 +158,7 @@ class ServiceTest(unittest.TestCase):
     def test_вебИнтерфейсОткрывается(self):
         response = client.get("/")
         self.assertEqual(response.status_code, 200)
-        self.assertIn("Распознавание рукописного текста",
+        self.assertIn("<h1>Margin</h1>",
                       response.get_data(as_text=True))
 
 
