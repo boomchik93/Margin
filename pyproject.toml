@@ -20,3 +20,12 @@ select = ["E", "F", "W", "B"]
 # логирование настраивается до импорта пайплайна: ocr и dictmatch пишут в
 # журнал уже на импорте
 "src/app.py" = ["E402"]
+
+[tool.coverage.run]
+source = ["src", "tools"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+precision = 1
