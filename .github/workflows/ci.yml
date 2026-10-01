@@ -55,8 +55,20 @@ jobs:
           cache-dependency-path: requirements.txt
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: pip install -r requirements.txt coverage
 
       # Модель и видеокарта не нужны: в тестах модель подменена заглушкой.
       - name: Run tests
-        run: python -m unittest discover -s tests/unit -v
+        run: coverage run -m unittest discover -s tests/unit -v
+
+      - name: Coverage report
+        if: always()
+        run: |
+          coverage report
+          {
+            echo "### Coverage"
+            echo
+            echo '```'
+            coverage report --no-skip-covered
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
